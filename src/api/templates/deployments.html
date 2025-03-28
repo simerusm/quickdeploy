@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}QuickDeploy - Deployments{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>Deployments</h1>
+        <a href="/deploy" class="btn btn-success">New Deployment</a>
+    </div>
+
+    {% if deployments %}
+        <div class="table-responsive">
+            <table class="table table-striped table-hover">
+                <thead class="table-dark">
+                    <tr>
+                        <th>ID</th>
+                        <th>Repository</th>
+                        <th>Branch</th>
+                        <th>Status</th>
+                        <th>URL</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for deployment in deployments %}
+                    <tr>
+                        <td>
+                            <a href="/deployments/{{ deployment.id }}">
+                                {{ deployment.id[:8] }}...
+                            </a>
+                        </td>
+                        <td>{{ deployment.repository.split('/')[-1] }}</td>
+                        <td>{{ deployment.branch }}</td>
+                        <td>
+                            <span class="badge bg-{{ deployment.status|status_color }}">
+                                {{ deployment.status }}
+                            </span>
+                        </td>
+                        <td>
+                            {% if deployment.url %}
+                                <a href="{{ deployment.url }}" target="_blank" class="text-decoration-none">
+                                    <i class="bi bi-box-arrow-up-right me-1"></i>View
+                                </a>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        <td>{{ deployment.created_at|format_date }}</td>
+                        <td>
+                            <a href="/deployments/{{ deployment.id }}" class="btn btn-sm btn-outline-primary">
+                                Details
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <div class="alert alert-info">
+            <i class="bi bi-info-circle-fill me-2"></i>
+            No deployments found. Click the "New Deployment" button to create one.
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

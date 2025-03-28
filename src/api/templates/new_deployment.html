@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}QuickDeploy - New Deployment{% endblock %}
+{% block content %}
+<div class="container">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0">Create New Deployment</h5>
+                </div>
+                <div class="card-body">
+                    <form method="POST" action="/deploy">
+                        <div class="mb-3">
+                            <label for="repository" class="form-label">Repository</label>
+                            {% if projects %}
+                                <select class="form-select" id="repository" name="repository" required>
+                                    <option value="" selected disabled>Select a project repository</option>
+                                    {% for project in projects %}
+                                        <option value="{{ project.repository_url }}" 
+                                                {% if request.args.get('repository') == project.repository_url %}selected{% endif %}>
+                                            {{ project.name }} ({{ project.repository_url }})
+                                        </option>
+                                    {% endfor %}
+                                </select>
+                                <div class="form-text">Select a repository from your projects</div>
+                            {% else %}
+                                <input type="text" class="form-control" id="repository" name="repository" 
+                                      value="{{ request.args.get('repository', '') }}"
+                                      placeholder="https://github.com/username/repository.git" required>
+                                <div class="form-text">No projects found. Enter a Git repository URL directly.</div>
+                            {% endif %}
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="branch" class="form-label">Branch</label>
+                            <input type="text" class="form-control" id="branch" name="branch" 
+                                  value="main" placeholder="main">
+                            <div class="form-text">The Git branch to deploy (defaults to main)</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="commit_hash" class="form-label">Commit Hash (Optional)</label>
+                            <input type="text" class="form-control" id="commit_hash" name="commit_hash" 
+                                  placeholder="e.g., a1b2c3d4...">
+                            <div class="form-text">Specific commit hash to deploy (defaults to latest)</div>
+                        </div>
+                        
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle-fill me-2"></i>
+                            The deployment process may take a few minutes depending on the project size.
+                        </div>
+                        
+                        <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+                            <a href="/deployments" class="btn btn-outline-secondary me-md-2">Cancel</a>
+                            <button type="submit" class="btn btn-primary">Deploy</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

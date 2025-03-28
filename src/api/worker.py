@@ -179,7 +179,7 @@ CMD ["nginx", "-g", "daemon off;"]
                 """)
         
         # Build Docker image
-        image_name = f"localhost:5000/quickdeploy-{deployment_id}:latest"
+        image_name = f"localhost:5005/quickdeploy-{deployment_id}:latest"
         
         # Build with docker
         build_cmd = ["docker", "build", "-t", image_name, "."]
