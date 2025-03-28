@@ -38,7 +38,7 @@
                         </td>
                         <td>
                             {% if deployment.url %}
-                                <a href="{{ deployment.url }}" target="_blank" class="text-decoration-none">
+                                <a href="{{ deployment.url }}:{{ ingress_port }}" target="_blank" class="text-decoration-none">
                                     <i class="bi bi-box-arrow-up-right me-1"></i>View
                                 </a>
                             {% else %}

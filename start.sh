@@ -13,14 +13,12 @@ echo "Script is running from: ${SCRIPT_DIR}"
 INSTALL_DIR="${SCRIPT_DIR}"
 LOG_DIR="${INSTALL_DIR}/logs"
 API_DIR="${INSTALL_DIR}/src/api"
-WORKER_DIR="${INSTALL_DIR}/src/worker"
 DASHBOARD_DIR="${INSTALL_DIR}/src/dashboard"
 
 # Create necessary directories
 echo -e "${GREEN}Creating necessary directories...${NC}"
 mkdir -p "${LOG_DIR}"
 mkdir -p "${API_DIR}"
-mkdir -p "${WORKER_DIR}"
 mkdir -p "${DASHBOARD_DIR}"
 
 echo -e "${GREEN}Starting QuickDeploy services...${NC}"
@@ -31,8 +29,8 @@ if [ ! -f "${API_DIR}/app.py" ]; then
   exit 1
 fi
 
-if [ ! -f "${WORKER_DIR}/worker.py" ]; then
-  echo -e "${RED}Worker file not found: ${WORKER_DIR}/worker.py${NC}"
+if [ ! -f "${API_DIR}/worker.py" ]; then
+  echo -e "${RED}Worker file not found: ${API_DIR}/worker.py${NC}"
   exit 1
 fi
 
@@ -58,9 +56,9 @@ else
   fi
 fi
 
-# Start worker
+# Start worker (now in the same directory as API)
 echo -e "${GREEN}Starting build worker...${NC}"
-cd "${WORKER_DIR}"
+cd "${API_DIR}"
 python3 worker.py > "${LOG_DIR}/worker.log" 2>&1 &
 WORKER_PID=$!
 sleep 2
