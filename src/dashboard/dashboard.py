@@ -8,6 +8,8 @@ app = Flask(__name__, template_folder='templates')
 app.secret_key = 'quickdeploy_secret_key'  # For flash messages
 API_URL = "http://localhost:8000"
 
+INGRESS_PORT = 8090
+
 @app.route('/')
 def index():
     """Dashboard home page"""
@@ -84,7 +86,7 @@ def deployment_details(deployment_id):
         deployment = None
         flash('Failed to fetch deployment details', 'error')
     
-    return render_template('deployment_details.html', deployment=deployment)
+    return render_template('deployment_details.html', deployment=deployment, ingress_port=INGRESS_PORT)
 
 @app.route('/deploy', methods=['GET', 'POST'])
 def new_deployment():
@@ -290,3 +292,4 @@ if __name__ == '__main__':
         ''')
         
     app.run(host='0.0.0.0', port=8080, debug=True)
+    print(f"Dashboard starting on http://0.0.0.0:8080")

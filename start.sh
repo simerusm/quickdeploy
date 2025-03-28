@@ -5,58 +5,130 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-INSTALL_DIR="."
+# Get the absolute path to the script directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+echo "Script is running from: ${SCRIPT_DIR}"
+
+# Set directories relative to script location
+INSTALL_DIR="${SCRIPT_DIR}"
+LOG_DIR="${INSTALL_DIR}/logs"
+API_DIR="${INSTALL_DIR}/src/api"
+WORKER_DIR="${INSTALL_DIR}/src/worker"
+DASHBOARD_DIR="${INSTALL_DIR}/src/dashboard"
+
+# Create necessary directories
+echo -e "${GREEN}Creating necessary directories...${NC}"
+mkdir -p "${LOG_DIR}"
+mkdir -p "${API_DIR}"
+mkdir -p "${WORKER_DIR}"
+mkdir -p "${DASHBOARD_DIR}"
 
 echo -e "${GREEN}Starting QuickDeploy services...${NC}"
 
-# Check if Docker is running
-if ! docker info &> /dev/null; then
-  echo -e "${RED}Docker is not running. Please start Docker Desktop first.${NC}"
+# Check if your Python files exist
+if [ ! -f "${API_DIR}/app.py" ]; then
+  echo -e "${RED}API file not found: ${API_DIR}/app.py${NC}"
   exit 1
 fi
 
-# Check if Kubernetes is running
-if ! kubectl get nodes &> /dev/null; then
-  echo -e "${RED}Kubernetes is not running. Please enable Kubernetes in Docker Desktop.${NC}"
+if [ ! -f "${WORKER_DIR}/worker.py" ]; then
+  echo -e "${RED}Worker file not found: ${WORKER_DIR}/worker.py${NC}"
   exit 1
 fi
 
-# Make sure Redis is running
-if ! docker ps | grep -q redis:alpine; then
-  echo -e "${YELLOW}Starting Redis...${NC}"
-  docker run -d -p 6379:6379 --name redis redis:alpine
-fi
-
-# Make sure registry is running
-if ! docker ps | grep -q registry:2; then
-  echo -e "${YELLOW}Starting container registry...${NC}"
-  docker run -d -p 5005:5000 --name registry registry:2
+if [ ! -f "${DASHBOARD_DIR}/dashboard.py" ]; then
+  echo -e "${RED}Dashboard file not found: ${DASHBOARD_DIR}/dashboard.py${NC}"
+  exit 1
 fi
 
 # Start API
 echo -e "${GREEN}Starting API service...${NC}"
-cd $INSTALL_DIR/src/api
-python3 app.py &
+cd "${API_DIR}"
+python3 app.py > "${LOG_DIR}/api.log" 2>&1 &
 API_PID=$!
+sleep 2
+if ps -p $API_PID > /dev/null; then
+  echo -e "${GREEN}API service started (PID: $API_PID)${NC}"
+else
+  echo -e "${RED}Failed to start API service. Check logs at ${LOG_DIR}/api.log${NC}"
+  if [ -f "${LOG_DIR}/api.log" ]; then
+    tail -n 20 "${LOG_DIR}/api.log"
+  else
+    echo -e "${RED}Log file not created${NC}"
+  fi
+fi
 
 # Start worker
 echo -e "${GREEN}Starting build worker...${NC}"
-cd $INSTALL_DIR/src/worker
-python3 worker.py &
+cd "${WORKER_DIR}"
+python3 worker.py > "${LOG_DIR}/worker.log" 2>&1 &
 WORKER_PID=$!
+sleep 2
+if ps -p $WORKER_PID > /dev/null; then
+  echo -e "${GREEN}Build worker started (PID: $WORKER_PID)${NC}"
+else
+  echo -e "${RED}Failed to start build worker. Check logs at ${LOG_DIR}/worker.log${NC}"
+  if [ -f "${LOG_DIR}/worker.log" ]; then
+    tail -n 20 "${LOG_DIR}/worker.log"
+  else
+    echo -e "${RED}Log file not created${NC}"
+  fi
+fi
 
 # Start dashboard
 echo -e "${GREEN}Starting web dashboard...${NC}"
-cd $INSTALL_DIR/src/dashboard
-python3 dashboard.py &
+cd "${DASHBOARD_DIR}"
+python3 dashboard.py > "${LOG_DIR}/dashboard.log" 2>&1 &
 DASHBOARD_PID=$!
+sleep 2
+if ps -p $DASHBOARD_PID > /dev/null; then
+  echo -e "${GREEN}Web dashboard started (PID: $DASHBOARD_PID)${NC}"
+else
+  echo -e "${RED}Failed to start web dashboard. Check logs at ${LOG_DIR}/dashboard.log${NC}"
+  if [ -f "${LOG_DIR}/dashboard.log" ]; then
+    tail -n 20 "${LOG_DIR}/dashboard.log"
+  else
+    echo -e "${RED}Log file not created${NC}"
+  fi
+fi
 
-echo -e "${GREEN}All QuickDeploy services are running!${NC}"
-echo -e "API: http://localhost:8000"
-echo -e "Dashboard: http://localhost:8080"
+# Set up port forwarding for ingress controller
+echo -e "${GREEN}Setting up port forwarding for ingress access...${NC}"
+kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 8090:80 > "${LOG_DIR}/ingress.log" 2>&1 &
+INGRESS_PID=$!
+sleep 2
+if ps -p $INGRESS_PID > /dev/null; then
+  echo -e "${GREEN}Ingress port forwarding started (PID: $INGRESS_PID)${NC}"
+else
+  echo -e "${RED}Failed to start ingress port forwarding. Check logs at ${LOG_DIR}/ingress.log${NC}"
+  if [ -f "${LOG_DIR}/ingress.log" ]; then
+    tail -n 20 "${LOG_DIR}/ingress.log"
+  else
+    echo -e "${RED}Log file not created${NC}"
+  fi
+fi
+
+echo -e "\n${GREEN}QuickDeploy services:${NC}"
+echo -e "- API: http://localhost:8000"
+echo -e "- Dashboard: http://localhost:8080"
+echo -e "- Deployments: http://app-*.quickdeploy.local:8090"
 echo -e "\nPress Ctrl+C to stop all services"
 
-# Handle clean shutdown
-trap "echo -e '${YELLOW}Stopping QuickDeploy services...${NC}'; kill $API_PID $WORKER_PID $DASHBOARD_PID; echo -e '${GREEN}Services stopped${NC}'; exit 0" INT TERM
+# Function to kill processes safely
+function cleanup {
+  echo -e "${YELLOW}Stopping QuickDeploy services...${NC}"
+  
+  if ps -p $API_PID > /dev/null; then kill $API_PID; fi
+  if ps -p $WORKER_PID > /dev/null; then kill $WORKER_PID; fi
+  if ps -p $DASHBOARD_PID > /dev/null; then kill $DASHBOARD_PID; fi
+  if ps -p $INGRESS_PID > /dev/null; then kill $INGRESS_PID; fi
+  
+  echo -e "${GREEN}Services stopped${NC}"
+  exit 0
+}
 
+# Handle clean shutdown
+trap cleanup INT TERM
+
+# Keep script running
 wait
