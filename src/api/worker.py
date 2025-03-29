@@ -12,6 +12,8 @@ from kubernetes import client, config
 from datetime import datetime
 import socket
 import logging
+import random
+import string
 
 # Configure logging
 logging.basicConfig(
@@ -140,6 +142,100 @@ def detect_node_port(project_dir):
     except Exception as e:
         logger.warning(f"Error detecting Node.js port: {e}")
         return 3000  # Default fallback
+    
+def detect_database_needs(project_dir):
+    """Detect database requirements from code"""
+    database_needs = []
+    
+    # Check for quickdeploy.yaml
+    config_path = os.path.join(project_dir, "quickdeploy.yaml")
+    if os.path.exists(config_path):
+        try:
+            import yaml
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+                if config and "databases" in config:
+                    for name, db_config in config["databases"].items():
+                        database_needs.append(db_config)
+                    return database_needs
+        except Exception as e:
+            logger.warning(f"Error reading quickdeploy.yaml: {e}")
+    
+    # Check package.json for Node.js projects
+    package_json_path = os.path.join(project_dir, "package.json")
+    if os.path.exists(package_json_path):
+        try:
+            with open(package_json_path) as f:
+                data = json.load(f)
+                deps = {}
+                if "dependencies" in data:
+                    deps.update(data["dependencies"])
+                if "devDependencies" in data:
+                    deps.update(data["devDependencies"])
+                
+                if any(pkg in deps for pkg in ["pg", "postgres", "typeorm", "sequelize"]):
+                    database_needs.append({"type": "postgres", "version": "14"})
+        except Exception as e:
+            logger.warning(f"Error parsing package.json: {e}")
+    
+    # Check requirements.txt for Python projects
+    req_path = os.path.join(project_dir, "requirements.txt")
+    if os.path.exists(req_path):
+        try:
+            with open(req_path) as f:
+                content = f.read().lower()
+                if "psycopg2" in content or "sqlalchemy" in content or "flask-sqlalchemy" in content:
+                    database_needs.append({"type": "postgres", "version": "14"})
+        except Exception as e:
+            logger.warning(f"Error parsing requirements.txt: {e}")
+    
+    return database_needs
+
+def provision_database(db_type, db_version, app_name):
+    """Create a database container for the application"""
+    try:
+        if db_type == "postgres":
+            # Generate random password
+            import random
+            import string
+            password = ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(16))
+            
+            # Create PostgreSQL container
+            container_name = f"{app_name}-postgres"
+            logger.info(f"Creating PostgreSQL container: {container_name}")
+            
+            subprocess.run([
+                "docker", "run", "-d",
+                "--name", container_name,
+                "-e", f"POSTGRES_PASSWORD={password}",
+                "-e", f"POSTGRES_USER=quickdeploy",
+                "-e", f"POSTGRES_DB=app",
+                f"postgres:{db_version}-alpine"
+            ], check=True)
+            
+            # Get container IP
+            container_ip = subprocess.run(
+                ["docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", container_name],
+                capture_output=True, text=True, check=True
+            ).stdout.strip()
+            
+            logger.info(f"PostgreSQL container IP: {container_ip}")
+            
+            return {
+                "type": "postgres",
+                "host": container_ip,
+                "port": 5432,
+                "database": "app",
+                "username": "quickdeploy",
+                "password": password,
+                "url": f"postgresql://quickdeploy:{password}@{container_ip}:5432/app"
+            }
+        else:
+            logger.warning(f"Unsupported database type: {db_type}")
+            return None
+    except Exception as e:
+        logger.error(f"Error provisioning database: {e}")
+        return None
     
 def detect_python_port(project_dir):
     """Detect the port a Python app will use"""
@@ -325,9 +421,21 @@ CMD ["nginx", "-g", "daemon off;"]
                 f.write("""
 FROM python:3.9-slim
 WORKDIR /app
+
+# Install system dependencies required for psycopg2
+RUN apt-get update && apt-get install -y \\
+    gcc \\
+    libpq-dev \\
+    python3-dev
+
+# Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
 COPY . .
+
+# Run with gunicorn
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
                 """)
                 
@@ -366,7 +474,7 @@ CMD ["nginx", "-g", "daemon off;"]
         logger.error(f"Unexpected error during build: {e}")
         return None
 
-def deploy_to_kubernetes(image_name, deployment_id, project_type, port):
+def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=None):
     """Deploy the application to Kubernetes"""
     app_name = f"app-{deployment_id[:8]}"
     namespace = "default"
@@ -400,6 +508,20 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type, port):
             if e.status != 404:
                 logger.warning(f"Error checking ingress: {e}")
         
+        # Add environment variables for database if provided
+        env_vars = []
+        if db_info:
+            logger.info(f"Adding database environment variables for {db_info['type']}")
+            if db_info["type"] == "postgres":
+                env_vars = [
+                    client.V1EnvVar(name="DATABASE_URL", value=db_info["url"]),
+                    client.V1EnvVar(name="DB_HOST", value=db_info["host"]),
+                    client.V1EnvVar(name="DB_PORT", value=str(db_info["port"])),
+                    client.V1EnvVar(name="DB_NAME", value=db_info["database"]),
+                    client.V1EnvVar(name="DB_USER", value=db_info["username"]),
+                    client.V1EnvVar(name="DB_PASSWORD", value=db_info["password"])
+                ]
+        
         # Create deployment
         deployment = client.V1Deployment(
             metadata=client.V1ObjectMeta(name=app_name),
@@ -417,7 +539,8 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type, port):
                             client.V1Container(
                                 name=app_name,
                                 image=image_name,
-                                ports=[client.V1ContainerPort(container_port=port)]
+                                ports=[client.V1ContainerPort(container_port=port)],
+                                env=env_vars
                             )
                         ]
                     )
@@ -537,6 +660,23 @@ def process_build_job():
             project_type, project_dir = detect_project_type(temp_dir)
             logger.info(f"Detected project type: {project_type}")
             
+            # Detect database needs
+            db_needs = detect_database_needs(project_dir)
+            db_info = None
+            if db_needs:
+                logger.info(f"Detected database needs: {db_needs}")
+                # For now, just handle the first database
+                if db_needs[0]["type"] == "postgres":
+                    db_info = provision_database(
+                        db_needs[0]["type"],
+                        db_needs[0].get("version", "14"),
+                        f"app-{deployment_id[:8]}"
+                    )
+                    if db_info:
+                        logger.info(f"Provisioned database: {db_info['type']} at {db_info['host']}")
+                    else:
+                        logger.warning("Failed to provision database")
+            
             # Build project
             logger.info(f"Building project...")
             image_name, port = build_project(project_type, project_dir, temp_dir, deployment_id)
@@ -547,7 +687,7 @@ def process_build_job():
             
             # Deploy to Kubernetes
             logger.info(f"Deploying to Kubernetes...")
-            deployment_url = deploy_to_kubernetes(image_name, deployment_id, project_type, port)
+            deployment_url = deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info)
             if not deployment_url:
                 logger.error("Deployment failed!")
                 update_deployment_status(deployment_id, "failed")
