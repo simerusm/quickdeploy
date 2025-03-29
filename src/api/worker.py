@@ -96,7 +96,7 @@ def clone_repository(repo_url, branch, temp_dir):
             logger.info(f"Cloning repository {repo_url} branch {branch}...")
             result = subprocess.run(
                 ["git", "clone", "--branch", branch, repo_url, temp_dir],
-                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE # stdout captured by pipe instead of printing to console
             )
             logger.info("Clone completed successfully")
             return True
@@ -109,60 +109,91 @@ def clone_repository(repo_url, branch, temp_dir):
         return False
 
 def detect_project_type(temp_dir):
-    """Detect project type based on files"""
-    try:
-        # List directory contents for debugging
-        logger.debug(f"Directory contents: {os.listdir(temp_dir)}")
-        
-        # Check for package.json (Node.js)
-        if os.path.exists(os.path.join(temp_dir, "package.json")):
-            with open(os.path.join(temp_dir, "package.json")) as f:
-                package_json = json.load(f)
+    """Detect project type based on files, including subdirectories"""
+    logger.info(f"Scanning directory: {temp_dir}")
+    logger.debug(f"Root directory contents: {os.listdir(temp_dir)}")
+    
+    # Function to find files recursively
+    def find_file(directory, target_file, max_depth=2, current_depth=0):
+        if current_depth > max_depth:
+            return None
             
-            # Check for Next.js
-            if "dependencies" in package_json and "next" in package_json["dependencies"]:
-                logger.info("Detected project type: nextjs")
-                return "nextjs"
-            # Check for React
-            elif "dependencies" in package_json and "react" in package_json["dependencies"]:
-                logger.info("Detected project type: react")
-                return "react"
-            else:
-                logger.info("Detected project type: nodejs")
-                return "nodejs"
-                
-        # Check for requirements.txt (Python)
-        elif os.path.exists(os.path.join(temp_dir, "requirements.txt")):
-            # Check for Django
-            if os.path.exists(os.path.join(temp_dir, "manage.py")):
-                logger.info("Detected project type: django")
-                return "django"
-            # Check for Flask
-            else:
-                with open(os.path.join(temp_dir, "requirements.txt")) as f:
-                    if "flask" in f.read().lower():
-                        logger.info("Detected project type: flask")
-                        return "flask"
-                    else:
-                        logger.info("Detected project type: python")
-                        return "python"
+        # Check current directory
+        file_path = os.path.join(directory, target_file)
+        if os.path.exists(file_path):
+            return file_path
+            
+        # Check subdirectories
+        for item in os.listdir(directory):
+            item_path = os.path.join(directory, item)
+            if os.path.isdir(item_path):
+                # Skip node_modules, .git, etc.
+                if item in ['node_modules', '.git', 'venv', '__pycache__']:
+                    continue
+                    
+                found_path = find_file(item_path, target_file, max_depth, current_depth + 1)
+                if found_path:
+                    return found_path
+                    
+        return None
+    
+    # Check for package.json (Node.js)
+    package_json_path = find_file(temp_dir, "package.json")
+    if package_json_path:
+        # Get the directory containing package.json
+        project_dir = os.path.dirname(package_json_path)
+        logger.info(f"Found package.json in {project_dir}")
+        
+        with open(package_json_path) as f:
+            package_json = json.load(f)
+        
+        # Check for Next.js
+        if "dependencies" in package_json and "next" in package_json["dependencies"]:
+            logger.info("Detected project type: nextjs")
+            return "nextjs", project_dir
+        # Check for React
+        elif "dependencies" in package_json and "react" in package_json["dependencies"]:
+            logger.info("Detected project type: react")
+            return "react", project_dir
         else:
-            logger.info("Detected project type: unknown")
-            return "unknown"
-    except Exception as e:
-        logger.error(f"Error detecting project type: {e}")
-        return "unknown"
+            logger.info("Detected project type: nodejs")
+            return "nodejs", project_dir
+            
+    # Check for requirements.txt (Python)
+    requirements_path = find_file(temp_dir, "requirements.txt")
+    if requirements_path:
+        # Get the directory containing requirements.txt
+        project_dir = os.path.dirname(requirements_path)
+        logger.info(f"Found requirements.txt in {project_dir}")
+        
+        # Check for Django
+        if os.path.exists(os.path.join(project_dir, "manage.py")):
+            logger.info("Detected project type: django")
+            return "django", project_dir
+        # Check for Flask
+        else:
+            with open(requirements_path) as f:
+                content = f.read().lower()
+                if "flask" in content:
+                    logger.info("Detected project type: flask")
+                    return "flask", project_dir
+                else:
+                    logger.info("Detected project type: python")
+                    return "python", project_dir
+    
+    logger.info("Detected project type: unknown")
+    return "unknown", temp_dir
 
-def build_project(project_type, temp_dir, deployment_id):
+def build_project(project_type, project_dir, repo_dir, deployment_id):
     """Build project based on type"""
     try:
         if project_type == "nextjs":
             logger.info("Building Next.js project...")
-            subprocess.run(["npm", "install"], cwd=temp_dir, check=True)
-            subprocess.run(["npm", "run", "build"], cwd=temp_dir, check=True)
+            subprocess.run(["npm", "install"], cwd=project_dir, check=True)
+            subprocess.run(["npm", "run", "build"], cwd=project_dir, check=True)
             
             # Create Dockerfile for Next.js
-            with open(os.path.join(temp_dir, "Dockerfile"), "w") as f:
+            with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
                 f.write("""
 FROM node:16-alpine
 WORKDIR /app
@@ -176,11 +207,11 @@ CMD ["npm", "start"]
                 
         elif project_type == "react":
             logger.info("Building React project...")
-            subprocess.run(["npm", "install"], cwd=temp_dir, check=True)
-            subprocess.run(["npm", "run", "build"], cwd=temp_dir, check=True)
+            subprocess.run(["npm", "install"], cwd=project_dir, check=True)
+            subprocess.run(["npm", "run", "build"], cwd=project_dir, check=True)
             
             # Create Dockerfile for React
-            with open(os.path.join(temp_dir, "Dockerfile"), "w") as f:
+            with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
                 f.write("""
 FROM nginx:alpine
 COPY build /usr/share/nginx/html
@@ -191,18 +222,18 @@ CMD ["nginx", "-g", "daemon off;"]
         elif project_type == "flask":
             logger.info("Building Flask project...")
             # Create virtual environment
-            subprocess.run(["python3", "-m", "venv", "venv"], cwd=temp_dir, check=True)
+            subprocess.run(["python3", "-m", "venv", "venv"], cwd=project_dir, check=True)
             
             # Install requirements
             if os.name == 'nt':  # Windows
-                pip_path = os.path.join(temp_dir, "venv", "Scripts", "pip")
+                pip_path = os.path.join(project_dir, "venv", "Scripts", "pip")
             else:  # Unix-like
-                pip_path = os.path.join(temp_dir, "venv", "bin", "pip")
+                pip_path = os.path.join(project_dir, "venv", "bin", "pip")
                 
-            subprocess.run([pip_path, "install", "-r", "requirements.txt"], cwd=temp_dir, check=True)
+            subprocess.run([pip_path, "install", "-r", "requirements.txt"], cwd=project_dir, check=True)
             
             # Create Dockerfile for Flask
-            with open(os.path.join(temp_dir, "Dockerfile"), "w") as f:
+            with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
                 f.write("""
 FROM python:3.9-slim
 WORKDIR /app
@@ -215,7 +246,7 @@ CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
         else:
             logger.info("Using generic Nginx container for unknown project type")
             # Generic fallback
-            with open(os.path.join(temp_dir, "Dockerfile"), "w") as f:
+            with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
                 f.write("""
 FROM nginx:alpine
 COPY . /usr/share/nginx/html
@@ -229,7 +260,7 @@ CMD ["nginx", "-g", "daemon off;"]
         # Build with docker
         build_cmd = ["docker", "build", "-t", image_name, "."]
         logger.info(f"Running build command: {' '.join(build_cmd)}")
-        subprocess.run(build_cmd, cwd=temp_dir, check=True)
+        subprocess.run(build_cmd, cwd=project_dir, check=True)
         
         # Push to local registry
         push_cmd = ["docker", "push", image_name]
@@ -415,12 +446,12 @@ def process_build_job():
                 return True
             
             # Detect project type
-            project_type = detect_project_type(temp_dir)
+            project_type, project_dir = detect_project_type(temp_dir)
             logger.info(f"Detected project type: {project_type}")
             
             # Build project
             logger.info(f"Building project...")
-            image_name = build_project(project_type, temp_dir, deployment_id)
+            image_name = build_project(project_type, project_dir, temp_dir, deployment_id)
             if not image_name:
                 logger.error("Build failed!")
                 update_deployment_status(deployment_id, "failed")
