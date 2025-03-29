@@ -195,7 +195,7 @@ def build_project(project_type, project_dir, repo_dir, deployment_id):
             # Create Dockerfile for Next.js
             with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
                 f.write("""
-FROM node:16-alpine
+FROM node:20-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm install --production
@@ -329,7 +329,7 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type):
                             client.V1Container(
                                 name=app_name,
                                 image=image_name,
-                                ports=[client.V1ContainerPort(container_port=80)]
+                                ports=[client.V1ContainerPort(container_port=3000)]
                             )
                         ]
                     )
@@ -345,7 +345,7 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type):
             metadata=client.V1ObjectMeta(name=app_name),
             spec=client.V1ServiceSpec(
                 selector={"app": app_name},
-                ports=[client.V1ServicePort(port=80, target_port=80)]
+                ports=[client.V1ServicePort(port=80, target_port=3000)]
             )
         )
         
