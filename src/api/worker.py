@@ -2,6 +2,7 @@
 import redis
 import json
 import os
+import re
 import tempfile
 import subprocess
 import time
@@ -107,6 +108,78 @@ def clone_repository(repo_url, branch, temp_dir):
     except Exception as e:
         logger.error(f"Clone error: {e}")
         return False
+    
+def detect_node_port(project_dir):
+    """Detect the port a Node.js app will use"""
+    try:
+        with open(os.path.join(project_dir, "package.json")) as f:
+            package_data = json.load(f)
+        
+        # First check for explicit port in custom scripts
+        if "scripts" in package_data:
+            for script_value in package_data["scripts"].values():
+                port_match = re.search(r"-p\s*(\d+)|--port\s*(\d+)|PORT=(\d+)", script_value)
+                if port_match:
+                    port = next(p for p in port_match.groups() if p is not None)
+                    return int(port)
+        
+        # Default ports by framework
+        if "dependencies" in package_data:
+            deps = package_data["dependencies"]
+            if "next" in deps:
+                return 3000  # Next.js default
+            elif "nuxt" in deps:
+                return 3000  # Nuxt.js default
+            elif "express" in deps:
+                return 3000  # Express common default
+            elif "react-scripts" in deps:
+                return 3000  # Create React App default
+        
+        # General Node.js default
+        return 3000
+    except Exception as e:
+        logger.warning(f"Error detecting Node.js port: {e}")
+        return 3000  # Default fallback
+    
+def detect_python_port(project_dir):
+    """Detect the port a Python app will use"""
+    try:
+        # Look for common patterns in Python files
+        for root, dirs, files in os.walk(project_dir):
+            for file in files:
+                if file.endswith('.py'):
+                    file_path = os.path.join(root, file)
+                    with open(file_path, 'r') as f:
+                        content = f.read()
+                        
+                        # Look for common port definitions
+                        port_patterns = [
+                            r'port\s*=\s*(\d+)',
+                            r'PORT\s*=\s*(\d+)',
+                            r'\.run\(.*port\s*=\s*(\d+)',
+                            r'app\.run\(.*port\s*=\s*(\d+)'
+                        ]
+                        
+                        for pattern in port_patterns:
+                            match = re.search(pattern, content)
+                            if match:
+                                return int(match.group(1))
+        
+        # Default by framework detection
+        if os.path.exists(os.path.join(project_dir, 'requirements.txt')):
+            with open(os.path.join(project_dir, 'requirements.txt')) as f:
+                req_content = f.read().lower()
+                if 'flask' in req_content:
+                    return 5000  # Flask default
+                elif 'django' in req_content:
+                    return 8000  # Django default
+                elif 'fastapi' in req_content:
+                    return 8000  # FastAPI default
+        
+        return 5000  # General Python default
+    except Exception as e:
+        logger.warning(f"Error detecting Python port: {e}")
+        return 5000  # Default fallback
 
 def detect_project_type(temp_dir):
     """Detect project type based on files, including subdirectories"""
@@ -184,9 +257,24 @@ def detect_project_type(temp_dir):
     logger.info("Detected project type: unknown")
     return "unknown", temp_dir
 
+def detect_port(project_type, project_dir):
+    """Detects the port of the project dynamically."""
+    port = 80  # Default fallback port
+    
+    if project_type == "nextjs" or project_type == "react" or project_type == "nodejs":
+        port = detect_node_port(project_dir)
+    elif project_type == "flask" or project_type == "django" or project_type == "python":
+        port = detect_python_port(project_dir)
+    
+    logger.info(f"Detected application port: {port}")
+    
+    return port
+
 def build_project(project_type, project_dir, repo_dir, deployment_id):
     """Build project based on type"""
     try:
+        port = detect_port(project_type, project_dir)
+
         if project_type == "nextjs":
             logger.info("Building Next.js project...")
             subprocess.run(["npm", "install"], cwd=project_dir, check=True)
@@ -268,7 +356,7 @@ CMD ["nginx", "-g", "daemon off;"]
         subprocess.run(push_cmd, check=True)
         
         logger.info(f"Successfully built and pushed image: {image_name}")
-        return image_name
+        return image_name, port
     except subprocess.CalledProcessError as e:
         logger.error(f"Build error: {e}")
         logger.error(f"Command output: {e.stdout if hasattr(e, 'stdout') else 'None'}")
@@ -278,7 +366,7 @@ CMD ["nginx", "-g", "daemon off;"]
         logger.error(f"Unexpected error during build: {e}")
         return None
 
-def deploy_to_kubernetes(image_name, deployment_id, project_type):
+def deploy_to_kubernetes(image_name, deployment_id, project_type, port):
     """Deploy the application to Kubernetes"""
     app_name = f"app-{deployment_id[:8]}"
     namespace = "default"
@@ -329,7 +417,7 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type):
                             client.V1Container(
                                 name=app_name,
                                 image=image_name,
-                                ports=[client.V1ContainerPort(container_port=3000)]
+                                ports=[client.V1ContainerPort(container_port=port)]
                             )
                         ]
                     )
@@ -345,7 +433,7 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type):
             metadata=client.V1ObjectMeta(name=app_name),
             spec=client.V1ServiceSpec(
                 selector={"app": app_name},
-                ports=[client.V1ServicePort(port=80, target_port=3000)]
+                ports=[client.V1ServicePort(port=80, target_port=port)]
             )
         )
         
@@ -451,7 +539,7 @@ def process_build_job():
             
             # Build project
             logger.info(f"Building project...")
-            image_name = build_project(project_type, project_dir, temp_dir, deployment_id)
+            image_name, port = build_project(project_type, project_dir, temp_dir, deployment_id)
             if not image_name:
                 logger.error("Build failed!")
                 update_deployment_status(deployment_id, "failed")
@@ -459,7 +547,7 @@ def process_build_job():
             
             # Deploy to Kubernetes
             logger.info(f"Deploying to Kubernetes...")
-            deployment_url = deploy_to_kubernetes(image_name, deployment_id, project_type)
+            deployment_url = deploy_to_kubernetes(image_name, deployment_id, project_type, port)
             if not deployment_url:
                 logger.error("Deployment failed!")
                 update_deployment_status(deployment_id, "failed")
