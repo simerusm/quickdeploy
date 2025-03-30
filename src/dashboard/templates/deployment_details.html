@@ -48,12 +48,27 @@
                             <dt class="col-sm-3">Last Updated</dt>
                             <dd class="col-sm-9">{{ deployment.updated_at|format_date }}</dd>
                             
-                            {% if deployment.url %}
+                            {% if service_urls %}
+                                <dt class="col-sm-3">Services</dt>
+                                <dd class="col-sm-9">
+                                    <div class="list-group">
+                                        {% for service_name, service_url in service_urls.items() %}
+                                            <a href="{{ service_url }}:{{ ingress_port }}" target="_blank" class="list-group-item list-group-item-action d-flex justify-content-between align-items-center">
+                                                <span>
+                                                    <i class="bi bi-box-arrow-up-right me-2"></i>
+                                                    {{ service_name }}
+                                                </span>
+                                                <span class="badge bg-primary rounded-pill">{{ service_url }}:{{ ingress_port }}</span>
+                                            </a>
+                                        {% endfor %}
+                                    </div>
+                                </dd>
+                            {% elif deployment.url %}
                                 <dt class="col-sm-3">URL</dt>
                                 <dd class="col-sm-9">
-                                    <a href="{{ deployment.url }}" target="_blank" class="btn btn-sm btn-outline-primary">
+                                    <a href="{{ deployment.url }}:{{ ingress_port }}" target="_blank" class="btn btn-sm btn-outline-primary">
                                         <i class="bi bi-box-arrow-up-right me-1"></i>
-                                        {{ deployment.url }}
+                                        {{ deployment.url }}:{{ ingress_port }}
                                     </a>
                                 </dd>
                             {% endif %}
@@ -69,10 +84,18 @@
                     </div>
                     <div class="card-body">
                         <div class="d-grid gap-2">
-                            {% if deployment.status == "deployed" and deployment.url %}
-                                <a href="{{ deployment.url }}:{{ ingress_port }}" target="_blank" class="btn btn-primary">
-                                    <i class="bi bi-globe me-1"></i> Open Deployment
-                                </a>
+                            {% if deployment.status == "deployed" %}
+                                {% if service_urls %}
+                                    {% for service_name, service_url in service_urls.items() %}
+                                        <a href="{{ service_url }}:{{ ingress_port }}" target="_blank" class="btn btn-primary">
+                                            <i class="bi bi-globe me-1"></i> Open {{ service_name }}
+                                        </a>
+                                    {% endfor %}
+                                {% elif deployment.url %}
+                                    <a href="{{ deployment.url }}:{{ ingress_port }}" target="_blank" class="btn btn-primary">
+                                        <i class="bi bi-globe me-1"></i> Open Deployment
+                                    </a>
+                                {% endif %}
                             {% endif %}
                             
                             <a href="/deploy?repository={{ deployment.repository }}" class="btn btn-outline-primary">

@@ -15,6 +15,8 @@ import logging
 import random
 import string
 
+INGRESS_PORT = 8090
+
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
@@ -277,81 +279,364 @@ def detect_python_port(project_dir):
         logger.warning(f"Error detecting Python port: {e}")
         return 5000  # Default fallback
 
-def detect_project_type(temp_dir):
-    """Detect project type based on files, including subdirectories"""
-    logger.info(f"Scanning directory: {temp_dir}")
-    logger.debug(f"Root directory contents: {os.listdir(temp_dir)}")
+def scan_repository(temp_dir):
+    """
+    Scan a repository for deployable services using a three-step approach:
+    1. Look for quickdeploy.yaml
+    2. Auto-detect services
+    3. Transform code if needed
+    """
+    services = []
     
-    # Function to find files recursively
-    def find_file(directory, target_file, max_depth=2, current_depth=0):
-        if current_depth > max_depth:
-            return None
-            
-        # Check current directory
-        file_path = os.path.join(directory, target_file)
-        if os.path.exists(file_path):
-            return file_path
-            
-        # Check subdirectories
-        for item in os.listdir(directory):
-            item_path = os.path.join(directory, item)
-            if os.path.isdir(item_path):
-                # Skip node_modules, .git, etc.
-                if item in ['node_modules', '.git', 'venv', '__pycache__']:
-                    continue
-                    
-                found_path = find_file(item_path, target_file, max_depth, current_depth + 1)
-                if found_path:
-                    return found_path
-                    
-        return None
+    # Step 1: Check for quickdeploy.yaml configuration
+    config_services = scan_repository_from_config(temp_dir)
+    if config_services:
+        logger.info(f"Found {len(config_services)} services in quickdeploy.yaml")
+        return config_services
     
+    # Step 2: Auto-detect services
+    services = scan_repository_auto(temp_dir)
+    if services:
+        logger.info(f"Auto-detected {len(services)} services in repository")
+        return services
+    
+    # Step 3: Fallback to treating repo as a single service
+    project_type, project_dir = detect_project_type(temp_dir)
+    if project_type != "unknown":
+        services.append({
+            "name": "main",
+            "path": project_dir,
+            "type": project_type, 
+            "port": detect_default_port(project_type),
+            "env": []
+        })
+        logger.info(f"Treating repository as a single {project_type} service")
+    
+    return services
+
+def scan_repository_from_config(temp_dir):
+    """Scan repository based on quickdeploy.yaml config"""
+    services = []
+    config_path = os.path.join(temp_dir, "quickdeploy.yaml")
+    
+    if not os.path.exists(config_path):
+        return []
+        
+    try:
+        import yaml
+        with open(config_path) as f:
+            config = yaml.safe_load(f)
+            
+        if not config or "services" not in config:
+            return []
+            
+        for service_name, service_config in config["services"].items():
+            service_path = service_config.get("path", ".")
+            absolute_path = os.path.join(temp_dir, service_path)
+            
+            services.append({
+                "name": service_name,
+                "path": absolute_path,
+                "type": service_config.get("type", "auto"),
+                "port": service_config.get("port", 0),  # 0 means auto-detect
+                "env": service_config.get("env", []),
+                "connections": service_config.get("connections", [])
+            })
+            
+        # If database configuration exists, attach to appropriate services
+        if "databases" in config:
+            for db_name, db_config in config["databases"].items():
+                db_info = {
+                    "type": db_config.get("type", "postgres"),
+                    "version": db_config.get("version", "14"),
+                    "name": db_name
+                }
+                
+                # Attach to specific services if specified
+                if "services" in db_config:
+                    for service_name in db_config["services"]:
+                        for service in services:
+                            if service["name"] == service_name:
+                                if "databases" not in service:
+                                    service["databases"] = []
+                                service["databases"].append(db_info)
+                # Otherwise attach to all services
+                else:
+                    for service in services:
+                        if "databases" not in service:
+                            service["databases"] = []
+                        service["databases"].append(db_info)
+                        
+    except Exception as e:
+        logger.error(f"Error parsing quickdeploy.yaml: {e}")
+        return []
+        
+    return services
+
+def scan_repository_auto(temp_dir):
+    """Auto-detect services in a repository without requiring config"""
+    services = []
+    
+    # Recursively search for deployable services in subdirectories
+    for item in os.listdir(temp_dir):
+        item_path = os.path.join(temp_dir, item)
+        
+        # Skip hidden directories and common non-service directories
+        if item.startswith('.') or item in ['node_modules', '__pycache__', 'venv', 'env', 'dist', 'build']:
+            continue
+            
+        if os.path.isdir(item_path):
+            # Check if this directory contains a deployable service
+            project_type, project_dir = detect_project_type(item_path)
+            
+            if project_type != "unknown":
+                # This is a deployable service
+                service = {
+                    "name": item.lower(),  # Use directory name as service name
+                    "path": project_dir,
+                    "type": project_type,
+                    "port": detect_default_port(project_type),
+                    "env": [],
+                    "connects_to": []  # Will be filled in later
+                }
+                
+                # For frontend services, auto-connect to backend services
+                if project_type in ["nextjs", "react", "vue"]:
+                    service["service_role"] = "frontend"
+                elif project_type in ["flask", "django", "express", "nodejs"]:
+                    service["service_role"] = "backend"
+                
+                services.append(service)
+    
+    # Establish connections between services
+    if len(services) > 1:
+        frontends = [s for s in services if s.get("service_role") == "frontend"]
+        backends = [s for s in services if s.get("service_role") == "backend"]
+        
+        # Connect frontends to backends
+        for frontend in frontends:
+            for backend in backends:
+                frontend["connects_to"].append(backend["name"])
+                
+                # Add environment variables for API URL
+                if frontend["type"] == "nextjs":
+                    frontend["env"].append(f"NEXT_PUBLIC_API_URL=http://{backend['name']}")
+                elif frontend["type"] == "react":
+                    frontend["env"].append(f"REACT_APP_API_URL=http://{backend['name']}")
+                else:
+                    frontend["env"].append(f"VUE_APP_API_URL=http://{backend['name']}")
+                    
+                # Add CORS environment variables to backend
+                if backend["type"] in ["flask", "django", "nodejs"]:
+                    backend["env"].append(f"CORS_ORIGIN=http://{frontend['name']}")
+    
+    return services
+
+def detect_project_type(directory):
+    """
+    Detect the type of project in a directory
+    Returns: (project_type, project_directory)
+    """
+    if not os.path.isdir(directory):
+        return "unknown", directory
+        
     # Check for package.json (Node.js)
-    package_json_path = find_file(temp_dir, "package.json")
-    if package_json_path:
-        # Get the directory containing package.json
-        project_dir = os.path.dirname(package_json_path)
-        logger.info(f"Found package.json in {project_dir}")
-        
-        with open(package_json_path) as f:
-            package_json = json.load(f)
-        
-        # Check for Next.js
-        if "dependencies" in package_json and "next" in package_json["dependencies"]:
-            logger.info("Detected project type: nextjs")
-            return "nextjs", project_dir
-        # Check for React
-        elif "dependencies" in package_json and "react" in package_json["dependencies"]:
-            logger.info("Detected project type: react")
-            return "react", project_dir
-        else:
-            logger.info("Detected project type: nodejs")
-            return "nodejs", project_dir
+    package_json_path = os.path.join(directory, "package.json")
+    if os.path.exists(package_json_path):
+        try:
+            with open(package_json_path) as f:
+                package_json = json.load(f)
+            
+            # Check for Next.js
+            if "dependencies" in package_json and "next" in package_json["dependencies"]:
+                return "nextjs", directory
+            # Check for React
+            elif "dependencies" in package_json and "react" in package_json["dependencies"]:
+                if "react-dom" in package_json["dependencies"]:
+                    return "react", directory
+            # Check for Vue.js
+            elif "dependencies" in package_json and "vue" in package_json["dependencies"]:
+                return "vue", directory
+            # Check for Express
+            elif "dependencies" in package_json and "express" in package_json["dependencies"]:
+                return "nodejs", directory
+            else:
+                return "nodejs", directory
+        except Exception as e:
+            logger.warning(f"Error parsing package.json: {e}")
             
     # Check for requirements.txt (Python)
-    requirements_path = find_file(temp_dir, "requirements.txt")
-    if requirements_path:
-        # Get the directory containing requirements.txt
-        project_dir = os.path.dirname(requirements_path)
-        logger.info(f"Found requirements.txt in {project_dir}")
-        
-        # Check for Django
-        if os.path.exists(os.path.join(project_dir, "manage.py")):
-            logger.info("Detected project type: django")
-            return "django", project_dir
-        # Check for Flask
-        else:
+    requirements_path = os.path.join(directory, "requirements.txt")
+    if os.path.exists(requirements_path):
+        try:
             with open(requirements_path) as f:
-                content = f.read().lower()
-                if "flask" in content:
-                    logger.info("Detected project type: flask")
-                    return "flask", project_dir
-                else:
-                    logger.info("Detected project type: python")
-                    return "python", project_dir
+                requirements = f.read().lower()
+                
+            # Check for Flask
+            if "flask" in requirements:
+                return "flask", directory
+            # Check for Django
+            elif "django" in requirements:
+                return "django", directory
+            else:
+                return "python", directory
+        except Exception as e:
+            logger.warning(f"Error reading requirements.txt: {e}")
     
-    logger.info("Detected project type: unknown")
-    return "unknown", temp_dir
+    # If no recognized project type, recurse into subdirectories
+    # to find potential nested projects (common in monorepos)
+    for item in os.listdir(directory):
+        item_path = os.path.join(directory, item)
+        if os.path.isdir(item_path) and not item.startswith('.') and item not in ['node_modules', '__pycache__', 'venv']:
+            project_type, project_dir = detect_project_type(item_path)
+            if project_type != "unknown":
+                return project_type, project_dir
+    
+    return "unknown", directory
+
+def detect_default_port(project_type):
+    """Return the default port for a project type"""
+    if project_type == "nextjs":
+        return 3000
+    elif project_type == "react":
+        return 3000
+    elif project_type == "vue":
+        return 8080
+    elif project_type == "flask":
+        return 5000
+    elif project_type == "django":
+        return 8000
+    elif project_type == "nodejs":
+        return 3000
+    else:
+        return 80
+
+def transform_service_code(service, service_map):
+    """
+    Transform code in a service to replace hardcoded URLs with service references
+    - service: The service being transformed
+    - service_map: Dictionary mapping service names to their deployment IDs
+    """
+    path = service["path"]
+    service_role = service.get("service_role", "")
+    
+    if service_role == "frontend":
+        # Find and transform hardcoded API URLs in frontend code
+        transform_frontend_urls(path, service_map)
+    elif service_role == "backend":
+        # Update CORS and other configurations in backend code
+        transform_backend_config(path, service_map)
+
+def transform_frontend_urls(directory, service_map):
+    """Replace hardcoded API URLs in frontend code"""
+    backend_services = {name: info for name, info in service_map.items() 
+                       if info.get("service_role") == "backend"}
+    
+    if not backend_services:
+        return
+        
+    # First backend service URL to use if we find hardcoded URLs
+    default_backend = list(backend_services.values())[0]
+    default_backend_url = f"http://app-{default_backend['deployment_id']}"
+    
+    # Scan for common patterns in JavaScript files
+    for root, dirs, files in os.walk(directory):
+        # Skip node_modules and other build directories
+        if 'node_modules' in root or 'build' in root or 'dist' in root:
+            continue
+            
+        for file in files:
+            # Only process JavaScript/TypeScript files
+            if file.endswith(('.js', '.jsx', '.ts', '.tsx')):
+                file_path = os.path.join(root, file)
+                
+                try:
+                    with open(file_path, 'r') as f:
+                        content = f.read()
+                    
+                    # Look for localhost or 127.0.0.1 URLs
+                    new_content = re.sub(
+                        r'(const|let|var)\s+(\w+URL|API_URL|apiUrl|baseUrl|BASE_URL)\s*=\s*[\'"]http://(localhost|127\.0\.0\.1):\d+(/\S*)[\'"]',
+                        f'\\1 \\2 = "{default_backend_url}\\4"',
+                        content
+                    )
+                    
+                    # Replace fetch or axios calls directly to localhost
+                    new_content = re.sub(
+                        r'(fetch|axios\.get|axios\.post|axios\.put|axios\.delete)\s*\(\s*[\'"]http://(localhost|127\.0\.0\.1):\d+(/\S*)[\'"]',
+                        f'\\1("{default_backend_url}\\3"',
+                        new_content
+                    )
+                    
+                    if content != new_content:
+                        with open(file_path, 'w') as f:
+                            f.write(new_content)
+                        logger.info(f"Transformed API URL in {file_path}")
+                
+                except Exception as e:
+                    logger.warning(f"Error transforming {file_path}: {e}")
+
+def transform_backend_config(directory, service_map):
+    """Update backend configurations for CORS and database connections"""
+    frontend_services = {name: info for name, info in service_map.items() 
+                         if info.get("service_role") == "frontend"}
+    
+    if not frontend_services:
+        return
+        
+    # Generate allowed origins list for CORS
+    allowed_origins = [f"http://app-{info['deployment_id']}" for info in frontend_services.values()]
+    allowed_origins_str = ", ".join([f'"{origin}"' for origin in allowed_origins])
+    
+    # Flask specific configuration
+    flask_files = find_files(directory, ["app.py", "main.py", "__init__.py"])
+    for file_path in flask_files:
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+            
+            # Update CORS configuration
+            if "flask_cors" in content.lower() or "flask-cors" in content.lower():
+                # Update existing CORS
+                new_content = re.sub(
+                    r'CORS\s*\(\s*app\s*,\s*resources\s*=\s*\{.*?\}\s*\)',
+                    f'CORS(app, resources={{r"/*": {{\"origins\": [{allowed_origins_str}]}}}})',
+                    content
+                )
+                
+                if content == new_content:
+                    # Try another pattern
+                    new_content = re.sub(
+                        r'CORS\s*\(\s*app\s*\)',
+                        f'CORS(app, resources={{r"/*": {{\"origins\": [{allowed_origins_str}]}}}})',
+                        content
+                    )
+            else:
+                # Add CORS if not present
+                import_pattern = r'from flask import .*?\n'
+                import_replacement = '\\g<0>from flask_cors import CORS\n'
+                new_content = re.sub(import_pattern, import_replacement, content)
+                
+                app_pattern = r'app\s*=\s*Flask\s*\(__name__\)'
+                app_replacement = '\\g<0>\nCORS(app, resources={r"/*": {"origins": [' + allowed_origins_str + ']}})'
+                new_content = re.sub(app_pattern, app_replacement, new_content)
+            
+            if content != new_content:
+                with open(file_path, 'w') as f:
+                    f.write(new_content)
+                logger.info(f"Updated CORS configuration in {file_path}")
+                
+        except Exception as e:
+            logger.warning(f"Error transforming {file_path}: {e}")
+
+def find_files(directory, filename_patterns):
+    """Find files matching any of the patterns in the directory"""
+    matching_files = []
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if any(pattern in file for pattern in filename_patterns):
+                matching_files.append(os.path.join(root, file))
+    return matching_files
 
 def detect_port(project_type, project_dir):
     """Detects the port of the project dynamically."""
@@ -474,9 +759,10 @@ CMD ["nginx", "-g", "daemon off;"]
         logger.error(f"Unexpected error during build: {e}")
         return None
 
-def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=None):
+def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=None, service_env=None):
     """Deploy the application to Kubernetes"""
-    app_name = f"app-{deployment_id[:8]}"
+    # Use the full deployment_id to ensure uniqueness between services
+    app_name = f"app-{deployment_id}"
     namespace = "default"
     
     try:
@@ -522,6 +808,19 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=
                     client.V1EnvVar(name="DB_PASSWORD", value=db_info["password"])
                 ]
         
+        # Add service environment variables if provided
+        if service_env:
+            for key, value in service_env.items():
+                env_vars.append(client.V1EnvVar(name=key, value=value))
+        
+        # Create container
+        container = client.V1Container(
+            name=app_name,
+            image=image_name,
+            ports=[client.V1ContainerPort(container_port=port)],
+            env=env_vars
+        )
+        
         # Create deployment
         deployment = client.V1Deployment(
             metadata=client.V1ObjectMeta(name=app_name),
@@ -535,14 +834,7 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=
                         labels={"app": app_name}
                     ),
                     spec=client.V1PodSpec(
-                        containers=[
-                            client.V1Container(
-                                name=app_name,
-                                image=image_name,
-                                ports=[client.V1ContainerPort(container_port=port)],
-                                env=env_vars
-                            )
-                        ]
+                        containers=[container]
                     )
                 )
             )
@@ -622,8 +914,8 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=
                 logger.warning(f"Could not add {host_name} to /etc/hosts: {e}")
                 logger.warning("You may need to manually add it or run as administrator")
         
-        logger.info(f"Deployment successful: http://{app_name}.quickdeploy.local")
-        return f"http://{app_name}.quickdeploy.local"
+        logger.info(f"Deployment successful: http://{host_name}")
+        return f"http://{host_name}"
     except Exception as e:
         logger.error(f"Kubernetes deployment error: {e}")
         return None
@@ -656,46 +948,149 @@ def process_build_job():
                 update_deployment_status(deployment_id, "failed")
                 return True
             
-            # Detect project type
-            project_type, project_dir = detect_project_type(temp_dir)
-            logger.info(f"Detected project type: {project_type}")
-            
-            # Detect database needs
-            db_needs = detect_database_needs(project_dir)
-            db_info = None
-            if db_needs:
-                logger.info(f"Detected database needs: {db_needs}")
-                # For now, just handle the first database
-                if db_needs[0]["type"] == "postgres":
-                    db_info = provision_database(
-                        db_needs[0]["type"],
-                        db_needs[0].get("version", "14"),
-                        f"app-{deployment_id[:8]}"
-                    )
-                    if db_info:
-                        logger.info(f"Provisioned database: {db_info['type']} at {db_info['host']}")
-                    else:
-                        logger.warning("Failed to provision database")
-            
-            # Build project
-            logger.info(f"Building project...")
-            image_name, port = build_project(project_type, project_dir, temp_dir, deployment_id)
-            if not image_name:
-                logger.error("Build failed!")
+            # Scan for services
+            services = scan_repository(temp_dir)
+            if not services:
+                logger.error("No deployable services found in repository")
                 update_deployment_status(deployment_id, "failed")
                 return True
+                
+            logger.info(f"Found {len(services)} services: {[s['name'] for s in services]}")
             
-            # Deploy to Kubernetes
-            logger.info(f"Deploying to Kubernetes...")
-            deployment_url = deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info)
-            if not deployment_url:
-                logger.error("Deployment failed!")
-                update_deployment_status(deployment_id, "failed")
-                return True
+            # For each service, make sure type and port are set correctly
+            for service in services:
+                # If type is 'auto' or not set, detect it
+                if service["type"] == "auto" or not service["type"]:
+                    project_type, _ = detect_project_type(service["path"])
+                    service["type"] = project_type
+                
+                # If port is 0 or not set, use default for type
+                if not service["port"]:
+                    service["port"] = detect_default_port(service["type"])
             
-            # Update status to deployed
-            update_deployment_status(deployment_id, "deployed", deployment_url)
-            logger.info(f"Deployment successful: {deployment_url}")
+            # Provision databases
+            db_infos = {}
+            for service in services:
+                if "databases" in service:
+                    for db_config in service["databases"]:
+                        db_name = db_config["name"]
+                        if db_name not in db_infos:
+                            db_infos[db_name] = provision_database(
+                                db_config["type"],
+                                db_config.get("version", "14"),
+                                f"db-{deployment_id[:8]}-{db_name}"
+                            )
+            
+            # Inside the process_build_job function, modify the service_deployment_ids generation:
+
+            # First pass: build all services
+            service_builds = {}
+            service_deployment_ids = {}
+
+            for service in services:
+                service_name = service["name"]
+                # Generate a unique ID for each service that includes both the deployment ID and service name
+                service_id = f"{deployment_id[:8]}-{service_name}"
+                service_deployment_ids[service_name] = service_id
+                
+                # Build project
+                logger.info(f"Building service {service_name} ({service['type']})...")
+                image_result = build_project(
+                    service["type"], 
+                    service["path"], 
+                    temp_dir, 
+                    service_id
+                )
+                
+                if not image_result:
+                    logger.error(f"Failed to build service {service_name}")
+                    update_deployment_status(deployment_id, "failed")
+                    return True
+                    
+                # Unpack the tuple
+                image_name, port = image_result
+                service["port"] = port  # Update the detected port
+                service_builds[service_name] = image_name
+            
+            # Now that we have all services built, transform code to fix hardcoded references
+            service_map = {name: {"deployment_id": id, "service_role": next((s["service_role"] for s in services if s["name"] == name), None)} 
+                          for name, id in service_deployment_ids.items()}
+            
+            for service in services:
+                transform_service_code(service, service_map)
+            
+            # Second pass: deploy all services with proper connectivity
+            deployment_urls = {}
+
+            for service in services:
+                service_name = service["name"]
+                service_id = service_deployment_ids[service_name]
+                
+                # Create environment variables for connecting to other services
+                service_env = {}
+
+                # Add standard environment variables for each service to connect to others
+                for other_name, other_id in service_deployment_ids.items():
+                    if other_name != service_name:
+                        # Internal service URL (for container-to-container communication)
+                        service_env[f"{other_name.upper()}_URL"] = f"http://app-{other_id}"
+                        
+                        # For frontend services, also add the external URL with hostname and port
+                        if service["type"] in ["nextjs", "react", "vue"] and other_name == "backend":
+                            service_env["NEXT_PUBLIC_API_URL"] = f"http://app-{other_id}.quickdeploy.local:{INGRESS_PORT}"
+                            logger.info("1: WEWEWGEGWEJHGWJEHGWJEHGWEJHGWJEHGWE" + service_env["NEXT_PUBLIC_API_URL"])
+                            service_env["REACT_APP_API_URL"] = f"http://app-{other_id}.quickdeploy.local:{INGRESS_PORT}"
+                            service_env["VUE_APP_API_URL"] = f"http://app-{other_id}.quickdeploy.local:{INGRESS_PORT}"
+                
+                # Add custom environment variables from config
+                for env_entry in service["env"]:
+                    if "=" in env_entry:
+                        key, value = env_entry.split("=", 1)
+                        # Replace service references with actual service URLs
+                        for other_name, other_id in service_deployment_ids.items():
+                            value = value.replace(f"http://{other_name}", f"http://app-{other_id}")
+                        service_env[key] = value
+
+                if "NEXT_PUBLIC_API_URL" in service_env:
+                    logger.info("1: WEWEWGEGWEJHGWJEHGWJEHGWEJHGWJEHGWE" + service_env["NEXT_PUBLIC_API_URL"])
+                else:
+                    print("2: NEXT_PUBLIC_API_URL not set for this service")
+                
+                # Add database info if this service uses databases
+                db_info = None
+                if "databases" in service and service["databases"]:
+                    db_name = service["databases"][0]["name"]
+                    if db_name in db_infos:
+                        db_info = db_infos[db_name]
+                
+                # Deploy to Kubernetes
+                logger.info(f"Deploying service {service_name}...")
+                image_name = service_builds[service_name]
+                
+                deployment_url = deploy_to_kubernetes(
+                    image_name, 
+                    service_id,  # Use the full service_id here
+                    service["type"],
+                    service["port"],
+                    db_info,
+                    service_env
+                )
+                
+                if not deployment_url:
+                    logger.error(f"Failed to deploy service {service_name}")
+                    update_deployment_status(deployment_id, "failed")
+                    return True
+                    
+                deployment_urls[service_name] = deployment_url
+
+            # Update status to deployed with all URLs
+            update_deployment_status(
+                deployment_id, 
+                "deployed", 
+                json.dumps(deployment_urls)
+            )
+
+            logger.info(f"Deployment successful: {deployment_urls}")
             
         finally:
             # Clean up temporary directory
