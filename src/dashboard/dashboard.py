@@ -82,11 +82,22 @@ def deployment_details(deployment_id):
     response = requests.get(f"{API_URL}/deployments/{deployment_id}")
     if response.status_code == 200:
         deployment = response.json()
+        
+        # Parse service URLs if available
+        service_urls = {}
+        if deployment['url']:
+            try:
+                service_urls = json.loads(deployment['url'])
+            except:
+                # If not JSON, treat as a single URL
+                service_urls = {'main': deployment['url']}
     else:
         deployment = None
-        flash('Failed to fetch deployment details', 'error')
     
-    return render_template('deployment_details.html', deployment=deployment, ingress_port=INGRESS_PORT)
+    return render_template('deployment_details.html', 
+                          deployment=deployment, 
+                          service_urls=service_urls,
+                          ingress_port=INGRESS_PORT)
 
 @app.route('/deploy', methods=['GET', 'POST'])
 def new_deployment():
