@@ -418,17 +418,17 @@ def scan_repository_auto(temp_dir):
             for backend in backends:
                 frontend["connects_to"].append(backend["name"])
                 
-                # Add environment variables for API URL
+                # Add environment variables for API URL with full domain and port
                 if frontend["type"] == "nextjs":
-                    frontend["env"].append(f"NEXT_PUBLIC_API_URL=http://{backend['name']}")
+                    frontend["env"].append(f"NEXT_PUBLIC_API_URL=http://{backend['name']}.quickdeploy.local:{INGRESS_PORT}")
                 elif frontend["type"] == "react":
-                    frontend["env"].append(f"REACT_APP_API_URL=http://{backend['name']}")
+                    frontend["env"].append(f"REACT_APP_API_URL=http://{backend['name']}.quickdeploy.local:{INGRESS_PORT}")
                 else:
-                    frontend["env"].append(f"VUE_APP_API_URL=http://{backend['name']}")
+                    frontend["env"].append(f"VUE_APP_API_URL=http://{backend['name']}.quickdeploy.local:{INGRESS_PORT}")
                     
-                # Add CORS environment variables to backend
+                # Add CORS environment variables to backend - include all possible frontend URLs
                 if backend["type"] in ["flask", "django", "nodejs"]:
-                    backend["env"].append(f"CORS_ORIGIN=http://{frontend['name']}")
+                    backend["env"].append(f"CORS_ORIGIN=http://{frontend['name']}.quickdeploy.local:{INGRESS_PORT}")
     
     return services
 
@@ -652,15 +652,24 @@ def detect_port(project_type, project_dir):
     return port
 
 def build_project(project_type, project_dir, repo_dir, deployment_id, env=None):
-    """Build project based on type"""
+    """Build project based on type with environment variables support"""
     try:
         port = detect_port(project_type, project_dir)
+        env = env or {}  # Ensure env is a dictionary even if None is passed
+
+        # Common function to write environment variables to a file
+        def write_env_file(filepath, variables):
+            with open(filepath, "w") as f:
+                for key, value in variables.items():
+                    f.write(f"{key}={value}\n")
+            logger.info(f"Created environment file at {filepath}")
 
         if project_type == "nextjs":
+            # For Next.js, use .env.production
             env_file = os.path.join(project_dir, ".env.production")
-            with open(env_file, "w") as f:
-                f.write(f"NEXT_PUBLIC_API_URL={env['NEXT_PUBLIC_API_URL']}\n")
-            logger.info("Created .env.production with NEXT_PUBLIC_API_URL")
+            # Filter for Next.js relevant environment variables
+            next_env = {k: v for k, v in env.items() if k.startswith("NEXT_") or k.startswith("NEXT_PUBLIC_")}
+            write_env_file(env_file, next_env)
 
             logger.info("Building Next.js project...")
             subprocess.run(["npm", "install"], cwd=project_dir, check=True)
@@ -673,6 +682,7 @@ FROM node:20-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm install --production
+COPY .env.production ./
 COPY .next ./.next
 COPY public ./public
 COPY node_modules ./node_modules
@@ -680,15 +690,41 @@ CMD ["npm", "start"]
                 """)
                 
         elif project_type == "react":
+            # For React, use .env
+            env_file = os.path.join(project_dir, ".env")
+            # Filter for React relevant environment variables
+            react_env = {k: v for k, v in env.items() if k.startswith("REACT_APP_")}
+            write_env_file(env_file, react_env)
+
             logger.info("Building React project...")
             subprocess.run(["npm", "install"], cwd=project_dir, check=True)
             subprocess.run(["npm", "run", "build"], cwd=project_dir, check=True)
             
-            # Create Dockerfile for React
+            # Create Dockerfile for React - Since React is built at build time, no need to include env vars
             with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
                 f.write("""
 FROM nginx:alpine
 COPY build /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+                """)
+                
+        elif project_type == "vue":
+            # For Vue, use .env.production
+            env_file = os.path.join(project_dir, ".env.production")
+            # Filter for Vue relevant environment variables
+            vue_env = {k: v for k, v in env.items() if k.startswith("VUE_APP_")}
+            write_env_file(env_file, vue_env)
+
+            logger.info("Building Vue project...")
+            subprocess.run(["npm", "install"], cwd=project_dir, check=True)
+            subprocess.run(["npm", "run", "build"], cwd=project_dir, check=True)
+            
+            # Create Dockerfile for Vue
+            with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
+                f.write("""
+FROM nginx:alpine
+COPY dist /usr/share/nginx/html
 EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]
                 """)
@@ -706,7 +742,14 @@ CMD ["nginx", "-g", "daemon off;"]
                 
             subprocess.run([pip_path, "install", "-r", "requirements.txt"], cwd=project_dir, check=True)
             
-            # Create Dockerfile for Flask
+            # Create a simple Python script to load environment variables at container startup
+            with open(os.path.join(project_dir, "start.sh"), "w") as f:
+                f.write("""#!/bin/bash
+# Start gunicorn with environment variables
+gunicorn --bind 0.0.0.0:5000 app:app
+""")
+                
+            # Create Dockerfile for Flask - Environment variables will be passed via Kubernetes
             with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
                 f.write("""
 FROM python:3.9-slim
@@ -725,8 +768,73 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Make startup script executable
+RUN chmod +x start.sh
+
 # Run with gunicorn
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
+CMD ["./start.sh"]
+                """)
+                
+        elif project_type == "django":
+            logger.info("Building Django project...")
+            # Create virtual environment
+            subprocess.run(["python3", "-m", "venv", "venv"], cwd=project_dir, check=True)
+            
+            # Install requirements
+            if os.name == 'nt':  # Windows
+                pip_path = os.path.join(project_dir, "venv", "Scripts", "pip")
+            else:  # Unix-like
+                pip_path = os.path.join(project_dir, "venv", "bin", "pip")
+                
+            subprocess.run([pip_path, "install", "-r", "requirements.txt"], cwd=project_dir, check=True)
+            
+            # Create Dockerfile for Django - Environment variables will be passed via Kubernetes
+            with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
+                f.write("""
+FROM python:3.9-slim
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \\
+    gcc \\
+    libpq-dev \\
+    python3-dev
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Run with gunicorn (adjust your Django project and WSGI module name)
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "project.wsgi:application"]
+                """)
+                
+        elif project_type == "nodejs" or project_type == "express":
+            # For Node.js/Express, use .env
+            env_file = os.path.join(project_dir, ".env")
+            write_env_file(env_file, env)
+
+            logger.info("Building Node.js project...")
+            subprocess.run(["npm", "install"], cwd=project_dir, check=True)
+            
+            # Create startup script that loads environment variables
+            with open(os.path.join(project_dir, "start.sh"), "w") as f:
+                f.write("""#!/bin/sh
+node app.js
+""")
+                
+            # Create Dockerfile for Node.js
+            with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
+                f.write("""
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+RUN chmod +x start.sh
+CMD ["./start.sh"]
                 """)
                 
         else:
@@ -986,19 +1094,20 @@ def process_build_job():
                                 f"db-{deployment_id[:8]}-{db_name}"
                             )
 
-            # First pass: build all services
-            service_builds = {}
+            # Generate service deployment IDs
             service_deployment_ids = {}
-
             for service in services:
                 service_name = service["name"]
-                # Generate a unique ID for each service that includes both the deployment ID and service name
                 service_id = f"{deployment_id[:8]}-{service_name}"
                 service_deployment_ids[service_name] = service_id
-
+            
+            # Pre-calculate environment variables for all services
+            service_environments = {}
+            for service in services:
+                service_name = service["name"]
                 service_env = {}
-
-                # Add standard environment variables for each service to connect to others
+                
+                # Add standard environment variables for connecting to other services
                 for other_name, other_id in service_deployment_ids.items():
                     if other_name != service_name:
                         # Internal service URL (for container-to-container communication)
@@ -1007,15 +1116,38 @@ def process_build_job():
                         # For frontend services, also add the external URL with hostname and port
                         if service["type"] in ["nextjs", "react", "vue"] and other_name == "backend":
                             service_env["NEXT_PUBLIC_API_URL"] = f"http://app-{other_id}.quickdeploy.local:{INGRESS_PORT}"
+                            service_env["REACT_APP_API_URL"] = f"http://app-{other_id}.quickdeploy.local:{INGRESS_PORT}"
+                            service_env["VUE_APP_API_URL"] = f"http://app-{other_id}.quickdeploy.local:{INGRESS_PORT}"
                 
-                # Build project
+                # Add custom environment variables from config
+                for env_entry in service.get("env", []):
+                    if "=" in env_entry:
+                        key, value = env_entry.split("=", 1)
+                        # Replace service references with actual service URLs
+                        for other_name, other_id in service_deployment_ids.items():
+                            value = value.replace(f"http://{other_name}", f"http://app-{other_id}")
+                        service_env[key] = value
+                
+                service_environments[service_name] = service_env
+                
+                if "NEXT_PUBLIC_API_URL" in service_env:
+                    logger.info(f"Environment for {service_name} includes NEXT_PUBLIC_API_URL: {service_env['NEXT_PUBLIC_API_URL']}")
+            
+            # First pass: build all services
+            service_builds = {}
+            
+            for service in services:
+                service_name = service["name"]
+                service_id = service_deployment_ids[service_name]
+                
+                # Build project with pre-calculated environment variables
                 logger.info(f"Building service {service_name} ({service['type']})...")
                 image_result = build_project(
-                    service["type"], 
-                    service["path"], 
-                    temp_dir, 
+                    service["type"],
+                    service["path"],
+                    temp_dir,
                     service_id,
-                    service_env
+                    service_environments[service_name]
                 )
                 
                 if not image_result:
@@ -1028,49 +1160,20 @@ def process_build_job():
                 service["port"] = port  # Update the detected port
                 service_builds[service_name] = image_name
             
-            # Now that we have all services built, transform code to fix hardcoded references
+            # Transform code to fix hardcoded references
             service_map = {name: {"deployment_id": id, "service_role": next((s["service_role"] for s in services if s["name"] == name), None)} 
-                          for name, id in service_deployment_ids.items()}
+                        for name, id in service_deployment_ids.items()}
             
             for service in services:
                 transform_service_code(service, service_map)
             
             # Second pass: deploy all services with proper connectivity
             deployment_urls = {}
-
+            
             for service in services:
                 service_name = service["name"]
                 service_id = service_deployment_ids[service_name]
-                
-                # Create environment variables for connecting to other services
-                service_env = {}
-
-                # Add standard environment variables for each service to connect to others
-                for other_name, other_id in service_deployment_ids.items():
-                    if other_name != service_name:
-                        # Internal service URL (for container-to-container communication)
-                        service_env[f"{other_name.upper()}_URL"] = f"http://app-{other_id}"
-                        
-                        # For frontend services, also add the external URL with hostname and port
-                        if service["type"] in ["nextjs", "react", "vue"] and other_name == "backend":
-                            service_env["NEXT_PUBLIC_API_URL"] = f"http://app-{other_id}.quickdeploy.local:{INGRESS_PORT}"
-                            logger.info("1: WEWEWGEGWEJHGWJEHGWJEHGWEJHGWJEHGWE" + service_env["NEXT_PUBLIC_API_URL"])
-                            service_env["REACT_APP_API_URL"] = f"http://app-{other_id}.quickdeploy.local:{INGRESS_PORT}"
-                            service_env["VUE_APP_API_URL"] = f"http://app-{other_id}.quickdeploy.local:{INGRESS_PORT}"
-                
-                # Add custom environment variables from config
-                for env_entry in service["env"]:
-                    if "=" in env_entry:
-                        key, value = env_entry.split("=", 1)
-                        # Replace service references with actual service URLs
-                        for other_name, other_id in service_deployment_ids.items():
-                            value = value.replace(f"http://{other_name}", f"http://app-{other_id}")
-                        service_env[key] = value
-
-                if "NEXT_PUBLIC_API_URL" in service_env:
-                    logger.info("1: WEWEWGEGWEJHGWJEHGWJEHGWEJHGWJEHGWE" + service_env["NEXT_PUBLIC_API_URL"])
-                else:
-                    print("2: NEXT_PUBLIC_API_URL not set for this service")
+                service_env = service_environments[service_name]
                 
                 # Add database info if this service uses databases
                 db_info = None
@@ -1084,8 +1187,8 @@ def process_build_job():
                 image_name = service_builds[service_name]
                 
                 deployment_url = deploy_to_kubernetes(
-                    image_name, 
-                    service_id,  # Use the full service_id here
+                    image_name,
+                    service_id,
                     service["type"],
                     service["port"],
                     db_info,
@@ -1098,14 +1201,14 @@ def process_build_job():
                     return True
                     
                 deployment_urls[service_name] = deployment_url
-
+            
             # Update status to deployed with all URLs
             update_deployment_status(
-                deployment_id, 
-                "deployed", 
+                deployment_id,
+                "deployed",
                 json.dumps(deployment_urls)
             )
-
+            
             logger.info(f"Deployment successful: {deployment_urls}")
             
         finally:
