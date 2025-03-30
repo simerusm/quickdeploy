@@ -397,7 +397,8 @@ def scan_repository_auto(temp_dir):
                     "type": project_type,
                     "port": detect_default_port(project_type),
                     "env": [],
-                    "connects_to": []  # Will be filled in later
+                    "connects_to": [],  # Will be filled in later,
+                    "service_role": "unknown"  # Default role
                 }
                 
                 # For frontend services, auto-connect to backend services
@@ -1161,8 +1162,13 @@ def process_build_job():
                 service_builds[service_name] = image_name
             
             # Transform code to fix hardcoded references
-            service_map = {name: {"deployment_id": id, "service_role": next((s["service_role"] for s in services if s["name"] == name), None)} 
-                        for name, id in service_deployment_ids.items()}
+            service_map = {
+                name: {
+                    "deployment_id": id, 
+                    "service_role": next((s.get("service_role", "unknown") for s in services if s["name"] == name), "unknown")
+                } 
+                for name, id in service_deployment_ids.items()
+            }
             
             for service in services:
                 transform_service_code(service, service_map)
