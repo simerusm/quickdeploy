@@ -651,12 +651,17 @@ def detect_port(project_type, project_dir):
     
     return port
 
-def build_project(project_type, project_dir, repo_dir, deployment_id):
+def build_project(project_type, project_dir, repo_dir, deployment_id, env=None):
     """Build project based on type"""
     try:
         port = detect_port(project_type, project_dir)
 
         if project_type == "nextjs":
+            env_file = os.path.join(project_dir, ".env.production")
+            with open(env_file, "w") as f:
+                f.write(f"NEXT_PUBLIC_API_URL={env['NEXT_PUBLIC_API_URL']}\n")
+            logger.info("Created .env.production with NEXT_PUBLIC_API_URL")
+
             logger.info("Building Next.js project...")
             subprocess.run(["npm", "install"], cwd=project_dir, check=True)
             subprocess.run(["npm", "run", "build"], cwd=project_dir, check=True)
@@ -980,8 +985,6 @@ def process_build_job():
                                 db_config.get("version", "14"),
                                 f"db-{deployment_id[:8]}-{db_name}"
                             )
-            
-            # Inside the process_build_job function, modify the service_deployment_ids generation:
 
             # First pass: build all services
             service_builds = {}
@@ -992,6 +995,18 @@ def process_build_job():
                 # Generate a unique ID for each service that includes both the deployment ID and service name
                 service_id = f"{deployment_id[:8]}-{service_name}"
                 service_deployment_ids[service_name] = service_id
+
+                service_env = {}
+
+                # Add standard environment variables for each service to connect to others
+                for other_name, other_id in service_deployment_ids.items():
+                    if other_name != service_name:
+                        # Internal service URL (for container-to-container communication)
+                        service_env[f"{other_name.upper()}_URL"] = f"http://app-{other_id}"
+                        
+                        # For frontend services, also add the external URL with hostname and port
+                        if service["type"] in ["nextjs", "react", "vue"] and other_name == "backend":
+                            service_env["NEXT_PUBLIC_API_URL"] = f"http://app-{other_id}.quickdeploy.local:{INGRESS_PORT}"
                 
                 # Build project
                 logger.info(f"Building service {service_name} ({service['type']})...")
@@ -999,7 +1014,8 @@ def process_build_job():
                     service["type"], 
                     service["path"], 
                     temp_dir, 
-                    service_id
+                    service_id,
+                    service_env
                 )
                 
                 if not image_result:
