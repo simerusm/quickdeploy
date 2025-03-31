@@ -58,8 +58,8 @@ fi
 
 # Start worker (now in the same directory as API)
 echo -e "${GREEN}Starting build worker...${NC}"
-cd "${API_DIR}"
-python3 worker.py > "${LOG_DIR}/worker.log" 2>&1 &
+cd "${INSTALL_DIR}"
+python3 -m src.api.worker > "${LOG_DIR}/worker.log" 2>&1 &
 WORKER_PID=$!
 sleep 2
 if ps -p $WORKER_PID > /dev/null; then
