@@ -2,19 +2,19 @@ import os
 import subprocess
 import logging
 from kubernetes import client
-from ..kubernetes.client import v1, apps_v1, networking_v1
+from ..kubernetes.client import k8s_client
 from ..config import INGRESS_PORT, K8S_NAMESPACE
 
 logger = logging.getLogger('quickdeploy')
 
 def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=None, service_env=None):
     """Deploy the application to Kubernetes"""
-    # Check if Kubernetes clients are initialized
-    if apps_v1 is None or v1 is None or networking_v1 is None:
-        logger.error("Kubernetes clients not initialized")
-        return None
-        
-    # Use the full deployment_id to ensure uniqueness between services
+    # Check if Kubernetes is initialized
+    if not k8s_client.is_initialized():
+        if not k8s_client.initialize():
+            logger.error("Kubernetes clients not initialized")
+            return None
+    
     app_name = f"app-{deployment_id}"
     namespace = K8S_NAMESPACE
     
@@ -22,27 +22,27 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=
         # Try to delete existing resources if they exist
         try:
             # Check if deployment exists before trying to delete
-            apps_v1.read_namespaced_deployment(name=app_name, namespace=namespace)
+            k8s_client.apps_v1.read_namespaced_deployment(name=app_name, namespace=namespace)
             logger.info(f"Deleting existing deployment: {app_name}")
-            apps_v1.delete_namespaced_deployment(name=app_name, namespace=namespace)
+            k8s_client.apps_v1.delete_namespaced_deployment(name=app_name, namespace=namespace)
         except client.exceptions.ApiException as e:
             if e.status != 404:  # Only log if not a "not found" error
                 logger.warning(f"Error checking deployment: {e}")
         
         try:
             # Check if service exists
-            v1.read_namespaced_service(name=app_name, namespace=namespace)
+            k8s_client.v1.read_namespaced_service(name=app_name, namespace=namespace)
             logger.info(f"Deleting existing service: {app_name}")
-            v1.delete_namespaced_service(name=app_name, namespace=namespace)
+            k8s_client.v1.delete_namespaced_service(name=app_name, namespace=namespace)
         except client.exceptions.ApiException as e:
             if e.status != 404:
                 logger.warning(f"Error checking service: {e}")
         
         try:
             # Check if ingress exists
-            networking_v1.read_namespaced_ingress(name=app_name, namespace=namespace)
+            k8s_client.networking_v1.read_namespaced_ingress(name=app_name, namespace=namespace)
             logger.info(f"Deleting existing ingress: {app_name}")
-            networking_v1.delete_namespaced_ingress(name=app_name, namespace=namespace)
+            k8s_client.networking_v1.delete_namespaced_ingress(name=app_name, namespace=namespace)
         except client.exceptions.ApiException as e:
             if e.status != 404:
                 logger.warning(f"Error checking ingress: {e}")
@@ -94,7 +94,7 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=
         )
         
         logger.info(f"Creating deployment: {app_name}")
-        apps_v1.create_namespaced_deployment(namespace=namespace, body=deployment)
+        k8s_client.apps_v1.create_namespaced_deployment(namespace=namespace, body=deployment)
         
         # Create service
         service = client.V1Service(
@@ -106,7 +106,7 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=
         )
         
         logger.info(f"Creating service: {app_name}")
-        v1.create_namespaced_service(namespace=namespace, body=service)
+        k8s_client.v1.create_namespaced_service(namespace=namespace, body=service)
         
         # Create ingress
         # Note: Docker Desktop Kubernetes uses a different structure for ingress
@@ -144,7 +144,7 @@ def deploy_to_kubernetes(image_name, deployment_id, project_type, port, db_info=
         )
         
         logger.info(f"Creating ingress: {app_name}")
-        networking_v1.create_namespaced_ingress(namespace=namespace, body=ingress)
+        k8s_client.networking_v1.create_namespaced_ingress(namespace=namespace, body=ingress)
         
         # Add to /etc/hosts if it doesn't already exist
         host_name = f"{app_name}.quickdeploy.local"

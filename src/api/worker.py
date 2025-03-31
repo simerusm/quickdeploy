@@ -10,7 +10,7 @@ import sys
 from .utils.logging import setup_logging
 from .config import REDIS_HOST, REDIS_PORT, REDIS_DB, INGRESS_PORT
 from .db import init_database, update_deployment_status
-from .kubernetes.client import initialize_kubernetes
+from .kubernetes.client import k8s_client
 from .kubernetes.deploy import deploy_to_kubernetes, provision_database
 from .utils.files import clone_repository
 from .services.scan import scan_repository
@@ -28,12 +28,6 @@ try:
     logger.info("Connected to Redis successfully")
 except Exception as e:
     logger.error(f"Redis connection error: {e}")
-
-# Initialize Kubernetes client
-k8s_initialized = initialize_kubernetes()
-if not k8s_initialized:
-    logger.error("Failed to initialize Kubernetes client. Check configuration.")
-    sys.exit(1)
 
 def process_build_job():
     """Process a build job from the queue"""
@@ -235,6 +229,10 @@ def main():
     
     # Initialize database
     init_database()
+
+    # Initialize Kubernetes client
+    if not k8s_client.initialize():
+        logger.warning("Failed to initialize Kubernetes client. Deployments may fail.")
     
     # Main processing loop
     while True:
