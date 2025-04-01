@@ -64,3 +64,25 @@
     {% endif %}
 </div>
 {% endblock %}
+
+{% block extra_scripts %}
+<script>
+// Auto-refresh deployments list every 1 min
+const refreshInterval = setInterval(function() {
+    fetch('/api/deployments/refresh')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Reload the page if we got new data
+                location.reload();
+            }
+        })
+        .catch(error => console.error('Error refreshing data:', error));
+}, 60000);
+
+// Clean up interval when page is unloaded
+window.addEventListener('beforeunload', function() {
+    clearInterval(refreshInterval);
+});
+</script>
+{% endblock %}

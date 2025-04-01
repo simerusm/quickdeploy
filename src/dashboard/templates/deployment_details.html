@@ -5,7 +5,9 @@
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h1>
             Deployment Details
-            <span class="badge bg-{{ deployment.status|status_color }} ms-2">{{ deployment.status }}</span>
+            {% if deployment %}
+                <span class="badge bg-{{ deployment.status|status_color }} ms-2">{{ deployment.status }}</span>
+            {% endif %}
         </h1>
         <a href="/deployments" class="btn btn-outline-secondary">Back to Deployments</a>
     </div>
@@ -154,4 +156,63 @@
         </div>
     {% endif %}
 </div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// Debug information
+console.log("Current deployment status:", "{{ deployment.status if deployment else 'None' }}");
+</script>
+{% if deployment %}
+<script>
+// Auto-refresh for active deployments
+var deploymentStatus = "{{ deployment.status }}";
+var refreshInterval = null;
+
+// Set up auto refresh for deployments that are not in terminal states
+if (deploymentStatus === 'queued' || deploymentStatus === 'building') {
+    console.log("Setting up auto-refresh for active deployment");
+    
+    // Faster refresh rate for active deployments (every 2 seconds)
+    refreshInterval = setInterval(function() {
+        console.log("Auto-refreshing page...");
+        location.reload();
+    }, 2000);
+}
+
+// Clean up interval when page is unloaded
+window.addEventListener('beforeunload', function() {
+    if (refreshInterval) {
+        clearInterval(refreshInterval);
+    }
+});
+</script>
+{% else %}
+<script>
+console.log("No deployment data available");
+</script>
+{% endif %}
+<script>
+
+// Function to delete a deployment
+function deleteDeployment(deploymentId) {
+    if (confirm('Are you sure you want to delete this deployment? This action cannot be undone.')) {
+        fetch('/api/deployments/' + deploymentId, {
+            method: 'DELETE',
+        })
+        .then(function(response) { return response.json(); })
+        .then(function(data) {
+            if (data.success) {
+                alert('Deployment deleted successfully');
+                window.location.href = '/deployments';
+            } else {
+                alert('Failed to delete deployment: ' + data.message);
+            }
+        })
+        .catch(function(error) {
+            alert('Error: ' + error.message);
+        });
+    }
+}
+</script>
 {% endblock %}

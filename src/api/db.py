@@ -2,7 +2,9 @@ import sqlite3
 from datetime import datetime
 import json
 import logging
-from .config import DB_PATH
+import os
+current_dir = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(current_dir, 'quickdeploy.db')
 
 logger = logging.getLogger('quickdeploy')
 
@@ -43,15 +45,23 @@ def init_database():
 def update_deployment_status(deployment_id, status, url=""):
     """Update deployment status in database"""
     try:
+        # Update database
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         updated_at = datetime.now().isoformat()
+        
+        print(f"DB: Updating deployment {deployment_id} to status={status}, url={url}")
         cursor.execute(
             "UPDATE deployments SET status = ?, updated_at = ?, url = ? WHERE id = ?",
             (status, updated_at, url, deployment_id)
         )
+        rows_affected = cursor.rowcount
         conn.commit()
         conn.close()
+        
+        print(f"DB: Update complete, {rows_affected} rows affected")
         logger.info(f"Updated deployment {deployment_id} status to {status}")
+            
     except Exception as e:
+        print(f"DB UPDATE ERROR: {e}")
         logger.error(f"Error updating deployment status: {e}")

@@ -5,18 +5,25 @@ import time
 import redis
 from datetime import datetime
 import sys
+import os
+import logging
+
+# Set up base path for module imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
 
 # Custom modules
-from .utils.logging import setup_logging
-from .config import REDIS_HOST, REDIS_PORT, REDIS_DB, INGRESS_PORT
-from .db import init_database, update_deployment_status
-from .kubernetes.client import k8s_client
-from .kubernetes.deploy import deploy_to_kubernetes, provision_database
-from .utils.files import clone_repository
-from .services.scan import scan_repository
-from .detection.project import detect_project_type, detect_default_port
-from .services.build import build_project
-from .services.transform import transform_service_code
+from api.utils.logging import setup_logging
+from api.config import REDIS_HOST, REDIS_PORT, REDIS_DB, INGRESS_PORT
+from api.db import init_database, update_deployment_status
+from api.kubernetes.client import k8s_client
+from api.kubernetes.deploy import deploy_to_kubernetes, provision_database
+from api.utils.files import clone_repository
+from api.services.scan import scan_repository
+from api.detection.project import detect_project_type, detect_default_port
+from api.services.build import build_project
+from api.services.transform import transform_service_code
 
 # Set up logger
 logger = setup_logging()
@@ -204,11 +211,13 @@ def process_build_job():
                 deployment_urls[service_name] = deployment_url
             
             # Update status to deployed with all URLs
+            logger.info(f"WORKER: About to update deployment {deployment_id} status to deployed with URLs: {json.dumps(deployment_urls)}")
             update_deployment_status(
                 deployment_id,
                 "deployed",
                 json.dumps(deployment_urls)
             )
+            logger.info(f"WORKER: Finished updating deployment status to deployed")
             
             logger.info(f"Deployment successful: {deployment_urls}")
             

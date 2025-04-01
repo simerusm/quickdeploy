@@ -8,6 +8,7 @@ import json
 import uuid
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
 # Initialize FastAPI app
 app = FastAPI(title="QuickDeploy API")
@@ -33,7 +34,7 @@ except redis.ConnectionError as e:
 
 # Initialize SQLite database
 def init_db():
-    db_path = 'quickdeploy.db'
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'quickdeploy.db')
     
     # Check if the file exists
     db_exists = os.path.isfile(db_path)

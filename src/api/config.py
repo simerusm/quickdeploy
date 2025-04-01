@@ -9,7 +9,8 @@ REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 REDIS_DB = int(os.environ.get('REDIS_DB', 0))
 
 # Database configuration
-DB_PATH = os.environ.get('DB_PATH', 'quickdeploy.db')
+current_dir = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(current_dir, 'quickdeploy.db')
 
 # Docker registry
 DOCKER_REGISTRY = os.environ.get('DOCKER_REGISTRY', 'localhost:5005')
