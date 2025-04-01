@@ -226,15 +226,66 @@ def delete_deployment_api(deployment_id):
 @app.route('/deploy', methods=['GET', 'POST'])
 def new_deployment():
     """Create new deployment page"""
+
+    def extract_env_from_file(env_file_content):
+        """
+        Extract environment variables from an uploaded .env file content.
+        
+        Args:
+            env_file_content: Content of the uploaded .env file
+            
+        Returns:
+            Dictionary of extracted environment variables
+        """
+        env_vars = {}
+        
+        # Process each line
+        for line in env_file_content.splitlines():
+            line = line.strip()
+            # Skip comments and empty lines
+            if not line or line.startswith('#'):
+                continue
+                
+            # Look for KEY=VALUE pattern
+            if '=' in line:
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+                
+                # Remove quotes if present
+                if value and value[0] == value[-1] and value[0] in ['"', "'"]:
+                    value = value[1:-1]
+                    
+                env_vars[key] = value
+        return env_vars
+
+
     if request.method == 'POST':
         try:
+            # Check if an .env file was uploaded
+            env_vars = {}
+            if 'env_file' in request.files:
+                env_file = request.files['env_file']
+                if env_file.filename:
+                    # Read and parse the file
+                    env_file_content = env_file.read().decode('utf-8')
+                    env_vars = extract_env_from_file(env_file_content)
+                    logger.info(f"Extracted {len(env_vars)} variables from uploaded .env file")
+            
+            # Create deployment
+            deployment_data = {
+                "repository": request.form.get('repository'),
+                "branch": request.form.get('branch', 'main'),
+                "commit_hash": request.form.get('commit_hash', 'HEAD')
+            }
+            
+            # Add environment variables if any were extracted
+            if env_vars:
+                deployment_data["env_vars"] = env_vars
+            
             response = requests.post(
                 f"{API_URL}/deployments/",
-                json={
-                    "repository": request.form.get('repository'),
-                    "branch": request.form.get('branch', 'main'),
-                    "commit_hash": request.form.get('commit_hash', 'HEAD')
-                }
+                json=deployment_data
             )
             
             if response.status_code == 200:

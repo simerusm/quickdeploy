@@ -4,6 +4,7 @@ import json
 from ..config import INGRESS_PORT, FRONTEND_TYPES, BACKEND_TYPES, SKIP_DIRECTORIES
 from ..detection.project import detect_project_type, detect_default_port
 import yaml
+import re
 
 logger = logging.getLogger('quickdeploy')
 

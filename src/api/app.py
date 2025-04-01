@@ -106,6 +106,7 @@ class Deployment(BaseModel):
     repository: str
     branch: str = "main"
     commit_hash: str = "HEAD"
+    env_vars: dict = None
 
 class Stack(BaseModel):
     name: str
@@ -180,6 +181,11 @@ def create_deployment(deployment: Deployment, background_tasks: BackgroundTasks)
         "commit_hash": deployment.commit_hash,
         "created_at": created_at
     }
+    
+    # Add environment variables if provided
+    if deployment.env_vars:
+        deploy_job["env_vars"] = deployment.env_vars
+    
     redis_client.lpush("build_queue", json.dumps(deploy_job))
     
     return {

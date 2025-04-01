@@ -9,49 +9,30 @@
                     <h5 class="mb-0">Create New Deployment</h5>
                 </div>
                 <div class="card-body">
-                    <form method="POST" action="/deploy">
+                    <form method="POST" action="/deploy" enctype="multipart/form-data">
                         <div class="mb-3">
-                            <label for="repository" class="form-label">Repository</label>
-                            {% if projects %}
-                                <select class="form-select" id="repository" name="repository" required>
-                                    <option value="" selected disabled>Select a project repository</option>
-                                    {% for project in projects %}
-                                        <option value="{{ project.repository_url }}" 
-                                                {% if request.args.get('repository') == project.repository_url %}selected{% endif %}>
-                                            {{ project.name }} ({{ project.repository_url }})
-                                        </option>
-                                    {% endfor %}
-                                </select>
-                                <div class="form-text">Select a repository from your projects</div>
-                            {% else %}
-                                <input type="text" class="form-control" id="repository" name="repository" 
-                                      value="{{ request.args.get('repository', '') }}"
-                                      placeholder="https://github.com/username/repository.git" required>
-                                <div class="form-text">No projects found. Enter a Git repository URL directly.</div>
-                            {% endif %}
+                            <label for="repository" class="form-label">Repository URL</label>
+                            <input type="text" class="form-control" id="repository" name="repository" required>
                         </div>
                         
                         <div class="mb-3">
                             <label for="branch" class="form-label">Branch</label>
-                            <input type="text" class="form-control" id="branch" name="branch" 
-                                  value="main" placeholder="main">
-                            <div class="form-text">The Git branch to deploy (defaults to main)</div>
+                            <input type="text" class="form-control" id="branch" name="branch" value="main">
                         </div>
                         
                         <div class="mb-3">
                             <label for="commit_hash" class="form-label">Commit Hash (Optional)</label>
-                            <input type="text" class="form-control" id="commit_hash" name="commit_hash" 
-                                  placeholder="e.g., a1b2c3d4...">
-                            <div class="form-text">Specific commit hash to deploy (defaults to latest)</div>
+                            <input type="text" class="form-control" id="commit_hash" name="commit_hash" value="HEAD">
                         </div>
                         
-                        <div class="alert alert-info">
-                            <i class="bi bi-info-circle-fill me-2"></i>
-                            The deployment process may take a few minutes depending on the project size.
+                        <!-- Add .env file upload field -->
+                        <div class="mb-3">
+                            <label for="env_file" class="form-label">.env File (Optional)</label>
+                            <input type="file" class="form-control" id="env_file" name="env_file">
+                            <div class="form-text">Upload a .env file with your environment variables and API keys</div>
                         </div>
                         
-                        <div class="d-grid gap-2 d-md-flex justify-content-md-end">
-                            <a href="/deployments" class="btn btn-outline-secondary me-md-2">Cancel</a>
+                        <div class="d-grid gap-2">
                             <button type="submit" class="btn btn-primary">Deploy</button>
                         </div>
                     </form>
