@@ -16,7 +16,6 @@
                         <th>Repository</th>
                         <th>Branch</th>
                         <th>Status</th>
-                        <th>URL</th>
                         <th>Created</th>
                         <th>Actions</th>
                     </tr>
@@ -35,15 +34,6 @@
                             <span class="badge bg-{{ deployment.status|status_color }}">
                                 {{ deployment.status }}
                             </span>
-                        </td>
-                        <td>
-                            {% if deployment.url %}
-                                <a href="{{ deployment.url }}:{{ ingress_port }}" target="_blank" class="text-decoration-none">
-                                    <i class="bi bi-box-arrow-up-right me-1"></i>View
-                                </a>
-                            {% else %}
-                                -
-                            {% endif %}
                         </td>
                         <td>{{ deployment.created_at|format_date }}</td>
                         <td>
