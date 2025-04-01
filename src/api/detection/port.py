@@ -7,12 +7,28 @@ logger = logging.getLogger('quickdeploy')
 
 def detect_port(project_type, project_dir):
     """Detects the port of the project dynamically."""
-    port = 80  # Default fallback port
+    # Default fallbacks
+    default_ports = {
+        "nextjs": 3000,
+        "react": 3000,
+        "vue": 8080,
+        "flask": 5000,
+        "django": 8000,
+        "python": 5000,
+        "nodejs": 3000,
+        "express": 3000,
+        "unknown": 80
+    }
+    
+    detected_port = None
     
     if project_type in ["nextjs", "react", "nodejs", "express"]:
-        port = detect_node_port(project_dir)
+        detected_port = detect_node_port(project_dir)
     elif project_type in ["flask", "django", "python"]:
-        port = detect_python_port(project_dir)
+        detected_port = detect_python_port(project_dir)
+    
+    # If a port was detected, use it; otherwise, use the default for this project type
+    port = detected_port if detected_port else default_ports.get(project_type, 80)
     
     logger.info(f"Detected application port: {port}")
     
