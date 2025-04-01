@@ -142,7 +142,15 @@ def process_build_job():
                         # Check if this is a service connection variable that we need to override
                         is_service_connection = (
                             key.endswith('_URL') and 
-                            ('API_URL' in key or 'SERVER_URL' in key or 'BACKEND_URL' in key or 'FRONTEND_URL' in key)
+                            (
+                                'API_URL' in key or 
+                                'SERVER_URL' in key or 
+                                'BACKEND_URL' in key or 
+                                'FRONTEND_URL' in key or
+                                'DATABASE_URL' in key or
+                                'DB_URL' in key or
+                                key in ['MONGODB_URI', 'POSTGRES_URL', 'MYSQL_URL']
+                            )
                         )
                         
                         # Don't override our service connection URLs
