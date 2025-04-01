@@ -49,6 +49,11 @@ def process_build_job():
         repo_url = job["repository"]
         branch = job["branch"]
         
+        # Extract environment variables if present
+        custom_env_vars = job.get("env_vars", {})
+        if custom_env_vars:
+            logger.info(f"Deployment includes {len(custom_env_vars)} custom environment variables")
+        
         logger.info(f"Processing deployment {deployment_id} for {repo_url} ({branch})")
         
         # Update status to building
@@ -130,6 +135,33 @@ def process_build_job():
                         for other_name, other_id in service_deployment_ids.items():
                             value = value.replace(f"http://{other_name}", f"http://app-{other_id}")
                         service_env[key] = value
+                
+                # Add custom environment variables from the uploaded .env file
+                if custom_env_vars:
+                    for key, value in custom_env_vars.items():
+                        # Check if this is a service connection variable that we need to override
+                        is_service_connection = (
+                            key.endswith('_URL') and 
+                            (
+                                'API_URL' in key or 
+                                'SERVER_URL' in key or 
+                                'BACKEND_URL' in key or 
+                                'FRONTEND_URL' in key or
+                                'DATABASE_URL' in key or
+                                'DB_URL' in key or
+                                key in ['MONGODB_URI', 'POSTGRES_URL', 'MYSQL_URL']
+                            )
+                        )
+                        
+                        # Don't override our service connection URLs
+                        if not is_service_connection:
+                            service_env[key] = value
+                            # If it's an API key or secret, log it (but mask the value)
+                            if 'API_KEY' in key or 'SECRET' in key or 'PASSWORD' in key:
+                                masked_value = '*' * len(value) if value else ''
+                                logger.info(f"Added API key from uploaded .env: {key}={masked_value}")
+                        else:
+                            logger.info(f"Skipping {key} from uploaded .env (using QuickDeploy's service URL instead)")
                 
                 service_environments[service_name] = service_env
                 

@@ -50,9 +50,10 @@ def transform_frontend_urls(directory, service_map):
                     
                     # Look for localhost or 127.0.0.1 URLs
                     new_content = re.sub(
-                        r'(const|let|var)\s+(\w+URL|API_URL|apiUrl|baseUrl|BASE_URL)\s*=\s*[\'"]http://(localhost|127\.0\.0\.1):\d+(/\S*)[\'"]',
+                        r'(const|let|var)\s+(\w+URL|API_URL|apiUrl|baseUrl|BASE_URL|BACKEND_URL|BACKEND|SERVER_URL|SERVER)\s*=\s*[\'"]http://(localhost|127\.0\.0\.1):\d+(/\S*)[\'"]',
                         f'\\1 \\2 = "{default_backend_url}\\4"',
-                        content
+                        content,
+                        flags=re.IGNORECASE
                     )
                     
                     # Replace fetch or axios calls directly to localhost
