@@ -4,6 +4,7 @@ import logging
 from ..detection.port import detect_port
 from ..config import DOCKER_REGISTRY
 from ..utils.files import write_env_file
+import json
 
 logger = logging.getLogger('quickdeploy')
 
@@ -26,7 +27,7 @@ def build_project(project_type, project_dir, repo_dir, deployment_id, env=None):
             
             # Create Dockerfile for Next.js
             with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
-                f.write("""
+                f.write(f"""
 FROM node:20-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -35,6 +36,10 @@ COPY .env.production ./
 COPY .next ./.next
 COPY public ./public
 COPY node_modules ./node_modules
+
+# Expose the detected port
+EXPOSE {port}
+
 CMD ["npm", "start"]
                 """)
                 
@@ -51,10 +56,20 @@ CMD ["npm", "start"]
             
             # Create Dockerfile for React - Since React is built at build time, no need to include env vars
             with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
-                f.write("""
+                f.write(f"""
 FROM nginx:alpine
 COPY build /usr/share/nginx/html
-EXPOSE 80
+
+# Configure nginx to handle SPA routing
+RUN echo 'server {{\\n\\
+    listen {port};\\n\\
+    root /usr/share/nginx/html;\\n\\
+    location / {{\\n\\
+        try_files $uri $uri/ /index.html;\\n\\
+    }}\\n\\
+}}' > /etc/nginx/conf.d/default.conf
+
+EXPOSE {port}
 CMD ["nginx", "-g", "daemon off;"]
                 """)
                 
@@ -71,10 +86,20 @@ CMD ["nginx", "-g", "daemon off;"]
             
             # Create Dockerfile for Vue
             with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
-                f.write("""
+                f.write(f"""
 FROM nginx:alpine
 COPY dist /usr/share/nginx/html
-EXPOSE 80
+
+# Configure nginx to handle SPA routing
+RUN echo 'server {{\\n\\
+    listen {port};\\n\\
+    root /usr/share/nginx/html;\\n\\
+    location / {{\\n\\
+        try_files $uri $uri/ /index.html;\\n\\
+    }}\\n\\
+}}' > /etc/nginx/conf.d/default.conf
+
+EXPOSE {port}
 CMD ["nginx", "-g", "daemon off;"]
                 """)
                 
@@ -93,14 +118,14 @@ CMD ["nginx", "-g", "daemon off;"]
             
             # Create a simple Python script to load environment variables at container startup
             with open(os.path.join(project_dir, "start.sh"), "w") as f:
-                f.write("""#!/bin/bash
+                f.write(f"""#!/bin/bash
 # Start gunicorn with environment variables
-gunicorn --bind 0.0.0.0:5000 app:app
+gunicorn --bind 0.0.0.0:{port} app:app
 """)
                 
             # Create Dockerfile for Flask - Environment variables will be passed via Kubernetes
             with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
-                f.write("""
+                f.write(f"""
 FROM python:3.9-slim
 WORKDIR /app
 
@@ -113,12 +138,16 @@ RUN apt-get update && apt-get install -y \\
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install gunicorn
 
 # Copy application code
 COPY . .
 
 # Make startup script executable
 RUN chmod +x start.sh
+
+# Expose the detected port
+EXPOSE {port}
 
 # Run with gunicorn
 CMD ["./start.sh"]
@@ -137,9 +166,26 @@ CMD ["./start.sh"]
                 
             subprocess.run([pip_path, "install", "-r", "requirements.txt"], cwd=project_dir, check=True)
             
+            # Detect Django project name
+            django_project = "project"  # Default project name
+            for item in os.listdir(project_dir):
+                if os.path.isdir(os.path.join(project_dir, item)) and os.path.exists(os.path.join(project_dir, item, 'settings.py')):
+                    django_project = item
+                    break
+            
+            # Create start script
+            with open(os.path.join(project_dir, "start.sh"), "w") as f:
+                f.write(f"""#!/bin/bash
+# Apply migrations
+python manage.py migrate
+
+# Start gunicorn
+gunicorn --bind 0.0.0.0:{port} {django_project}.wsgi:application
+""")
+            
             # Create Dockerfile for Django - Environment variables will be passed via Kubernetes
             with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
-                f.write("""
+                f.write(f"""
 FROM python:3.9-slim
 WORKDIR /app
 
@@ -152,12 +198,19 @@ RUN apt-get update && apt-get install -y \\
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install gunicorn
 
 # Copy application code
 COPY . .
 
-# Run with gunicorn (adjust your Django project and WSGI module name)
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "project.wsgi:application"]
+# Make startup script executable
+RUN chmod +x start.sh
+
+# Expose the detected port
+EXPOSE {port}
+
+# Run with gunicorn
+CMD ["./start.sh"]
                 """)
                 
         elif project_type == "nodejs" or project_type == "express":
@@ -168,21 +221,35 @@ CMD ["gunicorn", "--bind", "0.0.0.0:8000", "project.wsgi:application"]
             logger.info("Building Node.js project...")
             subprocess.run(["npm", "install"], cwd=project_dir, check=True)
             
+            # Try to determine the entry point
+            entry_point = "app.js"  # Default
+            package_json_path = os.path.join(project_dir, "package.json")
+            if os.path.exists(package_json_path):
+                with open(package_json_path, 'r') as f:
+                    package_data = json.load(f)
+                    if "main" in package_data:
+                        entry_point = package_data["main"]
+            
             # Create startup script that loads environment variables
             with open(os.path.join(project_dir, "start.sh"), "w") as f:
-                f.write("""#!/bin/sh
-node app.js
+                f.write(f"""#!/bin/sh
+# Start Node.js application
+node {entry_point}
 """)
                 
             # Create Dockerfile for Node.js
             with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
-                f.write("""
+                f.write(f"""
 FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm install
 COPY . .
 RUN chmod +x start.sh
+
+# Expose the detected port
+EXPOSE {port}
+
 CMD ["./start.sh"]
                 """)
                 
@@ -190,10 +257,10 @@ CMD ["./start.sh"]
             logger.info("Using generic Nginx container for unknown project type")
             # Generic fallback
             with open(os.path.join(project_dir, "Dockerfile"), "w") as f:
-                f.write("""
+                f.write(f"""
 FROM nginx:alpine
 COPY . /usr/share/nginx/html
-EXPOSE 80
+EXPOSE {port}
 CMD ["nginx", "-g", "daemon off;"]
                 """)
         
